@@ -56,9 +56,8 @@ resources:
               evaluation_dataset_table: "rag_eval_dataset"
               
               # Training configuration
-              max_training_samples: "20"
-              max_test_samples: "15"
-              num_threads: "24"
+              num_threads: "2"
+              test_mode: "false"  # Set to "true" for quick testing (3 train/3 test), "false" for full data (70/30 split)
               reflection_minibatch_size: "5"
               
               # RAG configuration
@@ -91,5 +90,5 @@ resources:
       #    - ""
       
       # Timeout settings
-      timeout_seconds: 3600  # 1 hour
+      timeout_seconds: 5400  # 1.5 hours
       max_concurrent_runs: 1

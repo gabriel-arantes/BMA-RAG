@@ -35,6 +35,7 @@ from mlflow.models import set_model
 dbutils.widgets.text("experiment_name", "/Workspace/Users/garantes_oc@bma.bm/bma_author_dspy_model_experiment", "Experiment Name")
 dbutils.widgets.text("catalog_name", "test_catalog", "Catalog Name")
 dbutils.widgets.text("schema_name", "test_schema", "Schema Name")
+dbutils.widgets.text("model_name", "bma_dspy_model", "Model Name")
 dbutils.widgets.text("vector_search_endpoint", "ctcbl-unstructured-endpoint", "Vector Search Endpoint")
 dbutils.widgets.text("vector_index_name", "test_volume_ctcbl_chunked_index_element__v0_0_1", "Vector Index Name")
 dbutils.widgets.text("evaluation_dataset_table", "rag_eval_dataset", "Evaluation Dataset Table")
@@ -44,11 +45,14 @@ dbutils.widgets.text("larger_chat_endpoint_name", "databricks-claude-3-7-sonnet"
 dbutils.widgets.text("reflection_chat_endpoint_name", "databricks-claude-sonnet-4-5", "Reflection Chat Endpoint Name")
 dbutils.widgets.text("max_history_length", "10", "Max History Length")
 dbutils.widgets.text("enable_history", "true", "Enable History")
+dbutils.widgets.text("num_threads", "2", "Number of Threads for GEPA Optimization")
+dbutils.widgets.dropdown("test_mode", "true", ["true", "false"], "Quick Test Mode (3 train/3 test)")
 
 # Get widget values
 experiment_name = dbutils.widgets.get("experiment_name")
 CATALOG = dbutils.widgets.get("catalog_name")
 SCHEMA = dbutils.widgets.get("schema_name")
+MODEL_NAME = dbutils.widgets.get("model_name")
 VECTOR_SEARCH_ENDPOINT = dbutils.widgets.get("vector_search_endpoint")
 VECTOR_SEARCH_INDEX = dbutils.widgets.get("vector_index_name")
 INDEX_PATH = f"{CATALOG}.{SCHEMA}.{VECTOR_SEARCH_INDEX}"
@@ -61,6 +65,11 @@ larger_lm_name = dbutils.widgets.get("larger_chat_endpoint_name")
 reflection_lm_name = dbutils.widgets.get("reflection_chat_endpoint_name")
 max_history_length = int(dbutils.widgets.get("max_history_length"))
 enable_history = dbutils.widgets.get("enable_history").lower() == "true"
+num_threads = int(dbutils.widgets.get("num_threads"))
+test_mode = dbutils.widgets.get("test_mode").lower() == "true"
+
+# Full model name for Unity Catalog registration
+FULL_MODEL_NAME = f"{CATALOG}.{SCHEMA}.{MODEL_NAME}"
 
 # COMMAND ----------
 
@@ -69,8 +78,9 @@ enable_history = dbutils.widgets.get("enable_history").lower() == "true"
 
 # COMMAND ----------
 
-# Set up MLflow experiment (best practice)
+# Set up MLflow experiment and Unity Catalog
 mlflow.set_experiment(experiment_name)
+mlflow.set_registry_uri("databricks-uc")
 
 # COMMAND ----------
 
@@ -538,7 +548,17 @@ example
 # COMMAND ----------
 
 random.Random(0).shuffle(data_set)
-train_dataset, test_dataset = data_set[:20], data_set[20:35]
+
+# Use tiny samples in test mode for quick iteration, or all available data in full mode
+if test_mode:
+    train_dataset, test_dataset = data_set[:3], data_set[3:6]
+    print("🧪 TEST MODE: Using 3 train / 3 test examples for quick testing")
+else:
+    # Full mode: Use ~70% for train, ~30% for test (all available data)
+    split_idx = int(len(data_set) * 0.7)
+    train_dataset, test_dataset = data_set[:split_idx], data_set[split_idx:]
+    print(f"📊 FULL MODE: Using {len(train_dataset)} train / {len(test_dataset)} test examples (all available data)")
+
 len(train_dataset), len(test_dataset)
 
 # COMMAND ----------
@@ -577,18 +597,23 @@ evaluate(rag)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Optimize using MIPROv2
+# MAGIC ### Optimize using MIPROv2 (COMMENTED OUT - Rate Limiting Issues)
 
 # COMMAND ----------
 
-# Optimize the RAG agent using MIPROv2
-tp = dspy.MIPROv2(metric=metric, auto="medium", num_threads=24)
-optimized_rag_v2 = tp.compile(RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history), trainset=train_dataset, max_bootstrapped_demos=2, max_labeled_demos=2)
-
-# COMMAND ----------
-
-# Evaluate the optimized RAG agent
-evaluate(optimized_rag_v2)
+# MIPROv2 optimization - COMMENTED OUT due to rate limiting issues
+# Uncomment and adjust num_threads if using provisioned throughput endpoints
+#
+# tp = dspy.MIPROv2(metric=metric, auto="medium", num_threads=num_threads)
+# optimized_rag_v2 = tp.compile(
+#     RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history),
+#     trainset=train_dataset,
+#     max_bootstrapped_demos=2,
+#     max_labeled_demos=2
+# )
+#
+# # Evaluate the optimized RAG agent
+# evaluate(optimized_rag_v2)
 
 # COMMAND ----------
 
@@ -635,17 +660,40 @@ def validate_retrieval_with_feedback(example, prediction, trace=None, pred_name=
         feedback = None
     return dspy.Prediction(score=score, feedback=feedback)
 
-def check_accuracy(rag_agent, test_data = test_dataset):
+def check_accuracy(rag_agent, test_data=None, metric="custom"):
     """
-    Checks the accuracy of the agent on the test data
+    Evaluate agent accuracy using DSPy's parallel evaluation.
+    
+    Args:
+        rag_agent: The RAG agent to evaluate
+        test_data: Test dataset (defaults to global test_dataset)
+        metric: "custom" for AI Judge, "semanticf1" for SemanticF1
+        
+    Returns:
+        float: Mean accuracy score (as decimal, e.g. 0.6730) for .2% formatting
     """
-    scores = []
-    for example in test_data:
-        # Use the question directly (already in mosaic format for our examples)
-        prediction = rag_agent(example.question)
-        score = validate_retrieval_with_feedback(example, prediction).score
-        scores.append(score)
-    return np.mean(scores)
+    from dspy.evaluate import Evaluate, SemanticF1
+    
+    # Use global test_dataset if not provided
+    data = test_data if test_data is not None else globals()['test_dataset']
+    
+    # Select evaluation metric
+    metric_fn = (SemanticF1(decompositional=True) 
+                 if metric == "semanticf1" 
+                 else validate_retrieval_with_feedback)
+    
+    # Use DSPy's parallel evaluator for efficiency
+    evaluator = Evaluate(
+        devset=data,
+        metric=metric_fn,
+        num_threads=num_threads,
+        display_progress=True,
+        display_table=False
+    )
+    
+    # Return the score attribute from EvaluationResult (percentage float, e.g. 67.30)
+    result = evaluator(rag_agent)
+    return result.score / 100.0  # Convert percentage (67.30) to decimal (0.6730) for formatting
 
 # COMMAND ----------
 
@@ -661,80 +709,119 @@ displayHTML(f"<h1>Uncompiled {larger_lm_name} accuracy: {uncompiled_large_lm_acc
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Log MIPROv2 Optimized Model
+# MAGIC ## MIPROv2 Optimization (COMMENTED OUT - Rate Limiting Issues)
+# MAGIC
+# MAGIC MIPROv2 optimization is currently disabled due to rate limiting issues with pay-per-token endpoints.
+# MAGIC Focus is on GEPA optimization with metric comparison.
 
 # COMMAND ----------
 
-# Log the MIPROv2 optimized model to MLflow (without Unity Catalog registration)
-miprov2_id = str(uuid.uuid4())
-with mlflow.start_run(run_name=f"miprov2_{miprov2_id}"):
-    mlflow.dspy.log_model(
-        optimized_rag_v2,
-        name="model"
-    )
-    
-    # Log accuracy metrics
-    miprov2_accuracy = check_accuracy(optimized_rag_v2)
-    mlflow.log_metric("miprov2_accuracy", miprov2_accuracy)
-    mlflow.log_metric("baseline_small_accuracy", uncompiled_small_lm_accuracy)
-    mlflow.log_metric("baseline_large_accuracy", uncompiled_large_lm_accuracy)
-    
-    # Log key parameters
-    mlflow.log_param("optimization_method", "MIPROv2")
-    mlflow.log_param("small_lm_name", small_lm_name)
-    mlflow.log_param("larger_lm_name", larger_lm_name)
-    mlflow.log_param("reflection_lm_name", reflection_lm_name)
-    mlflow.log_param("vector_search_endpoint", VECTOR_SEARCH_ENDPOINT)
-    mlflow.log_param("vector_search_index", VECTOR_SEARCH_INDEX)
-    mlflow.log_param("catalog", CATALOG)
-    mlflow.log_param("schema", SCHEMA)
-    mlflow.log_param("max_history_length", max_history_length)
-    mlflow.log_param("enable_history", enable_history)
-    
-    print(f"MIPROv2 model logged successfully!")
-    print(f"MIPROv2 accuracy: {miprov2_accuracy}")
+# MIPROv2 optimization - COMMENTED OUT due to rate limiting issues
+# Uncomment and adjust num_threads if using provisioned throughput endpoints
+#
+# from dspy.evaluate import SemanticF1
+# semantic_f1_metric = SemanticF1(decompositional=True)
+# 
+# miprov2_id = str(uuid.uuid4())
+# tp = dspy.MIPROv2(metric=semantic_f1_metric, auto="medium", num_threads=num_threads)
+# 
+# with mlflow.start_run(run_name=f"miprov2_{miprov2_id}"):
+#     optimized_rag_v2 = tp.compile(
+#         RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history),
+#         trainset=train_dataset,
+#         max_bootstrapped_demos=2,
+#         max_labeled_demos=2
+#     )
+#     
+#     miprov2_accuracy = check_accuracy(optimized_rag_v2, metric="semanticf1")
+#     mlflow.log_metric("miprov2_accuracy", miprov2_accuracy)
+#     mlflow.log_metric("baseline_small_accuracy", uncompiled_small_lm_accuracy)
+#     mlflow.log_metric("baseline_large_accuracy", uncompiled_large_lm_accuracy)
+#     
+#     mlflow.log_param("optimization_method", "MIPROv2")
+#     mlflow.log_param("small_lm_name", small_lm_name)
+#     mlflow.log_param("larger_lm_name", larger_lm_name)
+#     mlflow.log_param("reflection_lm_name", reflection_lm_name)
+#     mlflow.log_param("vector_search_endpoint", VECTOR_SEARCH_ENDPOINT)
+#     mlflow.log_param("vector_search_index", VECTOR_SEARCH_INDEX)
+#     mlflow.log_param("catalog", CATALOG)
+#     mlflow.log_param("schema", SCHEMA)
+#     mlflow.log_param("num_threads", num_threads)
+#     mlflow.log_param("max_history_length", max_history_length)
+#     mlflow.log_param("enable_history", enable_history)
+#     
+#     print(f"MIPROv2 model logged successfully!")
+#     print(f"MIPROv2 accuracy: {miprov2_accuracy:.2%}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Optimize using GEPA
+# MAGIC ### GEPA Optimization with Metric Comparison
+# MAGIC
+# MAGIC We train two GEPA models with different metrics and select the best:
+# MAGIC - **GEPA #1**: Custom AI Judge (Correctness)
+# MAGIC - **GEPA #2**: SemanticF1
+# MAGIC
+# MAGIC The best performing model is registered to Unity Catalog.
 
 # COMMAND ----------
 
-# defining an UUID to identify the optimized module
-id = str(uuid.uuid4())
-print(f"id: {id}")
-#Using GEPA with Claude-Sonnet-4 to evolve the instructions based on the AI Judge feedback
+# Generate unique experiment group ID for linking all related runs
+import datetime
+experiment_group_id = str(uuid.uuid4())
+timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
-gepa = dspy.GEPA(
+# Define input example once for all runs (DRY principle)
+input_example = {
+    'messages': [
+        {'content': 'What was the overall audit rating for CTCBL?', 'role': 'user'}
+    ]
+}
+
+print("="*80)
+print(f"🚀 STARTING MODEL TRAINING COMPARISON")
+print(f"Experiment Group ID: {experiment_group_id}")
+print("="*80)
+
+# ==================================================
+# GEPA TRAINING #1: Custom AI Judge
+# ==================================================
+id_custom = str(uuid.uuid4())
+print(f"\n{'='*80}")
+print(f"📊 GEPA TRAINING #1: Custom AI Judge")
+print(f"Run ID: {id_custom}")
+print(f"{'='*80}")
+
+gepa_custom = dspy.GEPA(
     metric=validate_retrieval_with_feedback,
     auto="light",
     reflection_minibatch_size=5,
     reflection_lm=dspy.LM(f"databricks/{reflection_lm_name}"),
-    num_threads=16,
+    num_threads=num_threads,
     seed=1
 )
 
-with mlflow.start_run(run_name=f"gepa_{id}"):
-    compiled_gepa = gepa.compile(
+with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
+    # Add tags for linking and traceability
+    mlflow.set_tag("experiment_group", experiment_group_id)
+    mlflow.set_tag("optimization_type", "gepa_custom")
+    mlflow.set_tag("training_metric", "custom_ai_judge_correctness")
+    mlflow.set_tag("role", "training")
+    
+    compiled_gepa_custom = gepa_custom.compile(
         RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history),
         trainset=train_dataset
     )
     
-    # Log the compiled model to MLflow (without Unity Catalog registration)
-    mlflow.dspy.log_model(
-        compiled_gepa,
-        name="model"
-    )
-    
-    # Log accuracy metrics
-    compiled_small_lm_accuracy = check_accuracy(compiled_gepa)
-    mlflow.log_metric("gepa_accuracy", compiled_small_lm_accuracy)
+    # Evaluate with Custom AI Judge metric
+    gepa_custom_accuracy = check_accuracy(compiled_gepa_custom, metric="custom")
+    mlflow.log_metric("gepa_custom_accuracy", gepa_custom_accuracy)
     mlflow.log_metric("baseline_small_accuracy", uncompiled_small_lm_accuracy)
     mlflow.log_metric("baseline_large_accuracy", uncompiled_large_lm_accuracy)
     
-    # Log key parameters
+    # Log parameters
     mlflow.log_param("optimization_method", "GEPA")
+    mlflow.log_param("training_metric", "custom_ai_judge_correctness")
     mlflow.log_param("small_lm_name", small_lm_name)
     mlflow.log_param("larger_lm_name", larger_lm_name)
     mlflow.log_param("reflection_lm_name", reflection_lm_name)
@@ -742,24 +829,402 @@ with mlflow.start_run(run_name=f"gepa_{id}"):
     mlflow.log_param("vector_search_index", VECTOR_SEARCH_INDEX)
     mlflow.log_param("catalog", CATALOG)
     mlflow.log_param("schema", SCHEMA)
+    mlflow.log_param("model_name", MODEL_NAME)
     mlflow.log_param("max_history_length", max_history_length)
     mlflow.log_param("enable_history", enable_history)
+    mlflow.log_param("num_threads", num_threads)
+    mlflow.log_param("experiment_group", experiment_group_id)
     
-    print(f"GEPA model logged successfully!")
-    print(f"GEPA accuracy: {compiled_small_lm_accuracy}")
+    # Log the trained model with full UC metadata (signature, input_example, resources)
+    from mlflow.models import infer_signature
+    from mlflow.models.resources import DatabricksVectorSearchIndex
+    
+    # Infer signature by calling the model correctly
+    signature_prediction = compiled_gepa_custom(input_example)
+    signature = infer_signature(input_example, signature_prediction)
+    
+    # Note: MLflow may show a warning about input_example validation, but this is expected
+    # for DSPy models with mosaic agent format. The model will function correctly.
+    mlflow.dspy.log_model(
+        compiled_gepa_custom,
+        artifact_path="model",
+        signature=signature,
+        input_example=input_example,
+        resources=[
+            DatabricksVectorSearchIndex(index_name=INDEX_PATH)
+        ],
+        pip_requirements=[
+            "dspy",
+            "mlflow[databricks]>=3.1.0",
+            "databricks-vectorsearch",
+            "databricks-sdk",
+            "databricks-dspy"
+        ]
+    )
+    
+    print(f"✅ GEPA (Custom AI Judge) model trained and logged")
+    print(f"   Accuracy: {gepa_custom_accuracy:.2%}")
 
-compiled_gepa.save(
-    "./compiled_gepa_rag_dir/",
-    save_program=True
+# ==================================================
+# GEPA TRAINING #2: SemanticF1
+# ==================================================
+id_semantic = str(uuid.uuid4())
+print(f"\n{'='*80}")
+print(f"📊 GEPA TRAINING #2: SemanticF1")
+print(f"Run ID: {id_semantic}")
+print(f"{'='*80}")
+
+from dspy.evaluate import SemanticF1
+semantic_f1_metric = SemanticF1(decompositional=True)
+
+gepa_semantic = dspy.GEPA(
+    metric=semantic_f1_metric,
+    auto="light",
+    reflection_minibatch_size=5,
+    reflection_lm=dspy.LM(f"databricks/{reflection_lm_name}"),
+    num_threads=num_threads,
+    seed=1
 )
 
+with mlflow.start_run(run_name=f"gepa_semantic_{id_semantic}") as run_semantic:
+    # Add tags for linking and traceability
+    mlflow.set_tag("experiment_group", experiment_group_id)
+    mlflow.set_tag("optimization_type", "gepa_semantic")
+    mlflow.set_tag("training_metric", "semantic_f1")
+    mlflow.set_tag("role", "training")
+    
+    compiled_gepa_semantic = gepa_semantic.compile(
+        RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history),
+        trainset=train_dataset
+    )
+    
+    # Evaluate with SemanticF1 metric
+    gepa_semantic_accuracy = check_accuracy(compiled_gepa_semantic, metric="semanticf1")
+    mlflow.log_metric("gepa_semantic_accuracy", gepa_semantic_accuracy)
+    mlflow.log_metric("baseline_small_accuracy", uncompiled_small_lm_accuracy)
+    mlflow.log_metric("baseline_large_accuracy", uncompiled_large_lm_accuracy)
+    
+    # Log parameters
+    mlflow.log_param("optimization_method", "GEPA")
+    mlflow.log_param("training_metric", "semantic_f1")
+    mlflow.log_param("small_lm_name", small_lm_name)
+    mlflow.log_param("larger_lm_name", larger_lm_name)
+    mlflow.log_param("reflection_lm_name", reflection_lm_name)
+    mlflow.log_param("vector_search_endpoint", VECTOR_SEARCH_ENDPOINT)
+    mlflow.log_param("vector_search_index", VECTOR_SEARCH_INDEX)
+    mlflow.log_param("catalog", CATALOG)
+    mlflow.log_param("schema", SCHEMA)
+    mlflow.log_param("model_name", MODEL_NAME)
+    mlflow.log_param("max_history_length", max_history_length)
+    mlflow.log_param("enable_history", enable_history)
+    mlflow.log_param("num_threads", num_threads)
+    mlflow.log_param("experiment_group", experiment_group_id)
+    
+    # Log the trained model with full UC metadata (signature, input_example, resources)
+    from mlflow.models import infer_signature
+    from mlflow.models.resources import DatabricksVectorSearchIndex
+    
+    # Infer signature by calling the model correctly
+    signature_prediction = compiled_gepa_semantic(input_example)
+    signature = infer_signature(input_example, signature_prediction)
+    
+    # Note: MLflow may show a warning about input_example validation, but this is expected
+    # for DSPy models with mosaic agent format. The model will function correctly.
+    mlflow.dspy.log_model(
+        compiled_gepa_semantic,
+        artifact_path="model",
+        signature=signature,
+        input_example=input_example,
+        resources=[
+            DatabricksVectorSearchIndex(index_name=INDEX_PATH)
+        ],
+        pip_requirements=[
+            "dspy",
+            "mlflow[databricks]>=3.1.0",
+            "databricks-vectorsearch",
+            "databricks-sdk",
+            "databricks-dspy"
+        ]
+    )
+    
+    print(f"✅ GEPA (SemanticF1) model trained and logged")
+    print(f"   Accuracy: {gepa_semantic_accuracy:.2%}")
+
+# ==================================================
+# RUN #3: COMPARE METRICS AND REGISTER BEST MODEL
+# ==================================================
+print(f"\n{'='*80}")
+print("⚖️  COMPARING METRICS AND REGISTERING BEST MODEL")
+print(f"{'='*80}")
+
+with mlflow.start_run(run_name=f"model_comparison_{timestamp}") as comparison_run:
+    # Add tags for linking
+    mlflow.set_tag("experiment_group", experiment_group_id)
+    mlflow.set_tag("role", "comparison_and_registration")
+    
+    # Collect all model results in a dictionary list (scalable approach)
+    model_results = [
+        {
+            "name": "Custom AI Judge",
+            "metric_name": "custom_ai_judge_correctness",
+            "model": compiled_gepa_custom,
+            "accuracy": gepa_custom_accuracy,
+            "run_id": run_custom.info.run_id
+        },
+        {
+            "name": "SemanticF1",
+            "metric_name": "semantic_f1",
+            "model": compiled_gepa_semantic,
+            "accuracy": gepa_semantic_accuracy,
+            "run_id": run_semantic.info.run_id
+        }
+        # Future: Just append new metrics here!
+    ]
+    
+    # Select best model using max() - scalable and elegant!
+    best_result = max(model_results, key=lambda x: x["accuracy"])
+    
+    # Extract values
+    best_model = best_result["model"]
+    best_metric_name = best_result["metric_name"]
+    best_accuracy = best_result["accuracy"]
+    best_run_id = best_result["run_id"]
+    winner = best_result["name"]
+    
+    # Get runner-up and all metrics compared
+    sorted_results = sorted(model_results, key=lambda x: x["accuracy"], reverse=True)
+    runner_up_accuracy = sorted_results[1]["accuracy"] if len(sorted_results) > 1 else 0.0
+    all_metrics_compared = ",".join([r["metric_name"] for r in model_results])
+    
+    # Print comparison results
+    print(f"\nModel Comparison Results:")
+    for i, result in enumerate(sorted_results, 1):
+        marker = "🏆" if result["name"] == winner else f"  {i}."
+        print(f"{marker} {result['name']:20s} - {result['accuracy']:.2%}")
+    
+    print(f"\n✅ Best Model: {winner}")
+    print(f"   Accuracy: {best_accuracy:.2%}")
+    print(f"   Improvement: {(best_accuracy - runner_up_accuracy):.2%} over runner-up")
+    
+    # Log comparison metrics
+    mlflow.log_metric("best_model_accuracy", best_accuracy)
+    mlflow.log_metric("runner_up_accuracy", runner_up_accuracy)
+    mlflow.log_metric("accuracy_improvement", best_accuracy - runner_up_accuracy)
+    mlflow.log_metric("baseline_small_accuracy", uncompiled_small_lm_accuracy)
+    mlflow.log_metric("baseline_large_accuracy", uncompiled_large_lm_accuracy)
+    
+    # Log comparison parameters
+    mlflow.log_param("winning_metric", best_metric_name)
+    mlflow.log_param("best_training_run_id", best_run_id)
+    mlflow.log_param("experiment_group", experiment_group_id)
+    mlflow.log_param("comparison_performed", "yes")
+    mlflow.log_param("num_models_compared", len(model_results))
+    
+    # Log all training run details
+    for i, result in enumerate(model_results):
+        mlflow.log_param(f"training_run_{i+1}_id", result["run_id"])
+        mlflow.log_param(f"training_run_{i+1}_name", result["name"])
+        mlflow.log_param(f"training_run_{i+1}_metric", result["metric_name"])
+        mlflow.log_param(f"training_run_{i+1}_accuracy", result["accuracy"])
+    
+    # ==================================================
+    # REGISTER BEST MODEL FROM TRAINING RUN
+    # ==================================================
+    print(f"\n{'='*80}")
+    print("📦 REGISTERING BEST MODEL TO UNITY CATALOG")
+    print(f"{'='*80}")
+    print(f"Registering from training run: {best_run_id}")
+    
+    # Register model using URI from best training run (no re-logging)
+    model_uri = f"runs:/{best_run_id}/model"
+    
+    client = mlflow.tracking.MlflowClient()
+    model_version = mlflow.register_model(
+        model_uri=model_uri,
+        name=FULL_MODEL_NAME
+    )
+    
+    # Get model version info
+    model_info = client.get_model_version(
+        name=FULL_MODEL_NAME,
+        version=model_version.version
+    )
+    
+    print(f"✅ Model registered to Unity Catalog")
+    print(f"   Model: {FULL_MODEL_NAME}")
+    print(f"   Version: {model_version.version}")
+    print(f"   Source Run: {best_run_id}")
 
 # COMMAND ----------
 
-loaded_rag_gepa = dspy.load("./compiled_gepa_rag_dir/")
-result_obj = loaded_rag_gepa({'messages': [{'content': 'Who is responsible for remediating the issues with the Customer Risk Assessment for the high-risk PEP client, and what is the remediation date?', 'role': 'user'}]})
-result = result_obj.response if hasattr(result_obj, 'response') else result_obj
+# MAGIC %md
+# MAGIC ### Set Model Alias and Tags
 
 # COMMAND ----------
 
-displayHTML(f"<h1>Compiled {small_lm_name} accuracy: {compiled_small_lm_accuracy}</h1>")
+# ==================================================
+# SET MODEL ALIAS AND TAGS
+# ==================================================
+print(f"{'='*80}")
+print("🏷️  SETTING MODEL ALIAS AND TAGS")
+print(f"{'='*80}")
+
+client = mlflow.tracking.MlflowClient()
+
+# Update model description
+client.update_registered_model(
+    name=FULL_MODEL_NAME,
+    description=f"BMA Author DSPy Model - GEPA optimized RAG system trained with {winner} metric (selected via metric comparison)"
+)
+
+# Set registered model tags
+client.set_registered_model_tag(FULL_MODEL_NAME, "team", "bma_dsai_mde")
+client.set_registered_model_tag(FULL_MODEL_NAME, "use_case", "document_qa")
+client.set_registered_model_tag(FULL_MODEL_NAME, "optimization_method", "GEPA")
+client.set_registered_model_tag(FULL_MODEL_NAME, "metrics_compared", all_metrics_compared)
+client.set_registered_model_tag(FULL_MODEL_NAME, "metric_comparison", "yes")
+client.set_registered_model_tag(FULL_MODEL_NAME, "winning_metric", best_metric_name)
+
+# Set version tags for traceability
+client.set_model_version_tag(
+    name=FULL_MODEL_NAME,
+    version=model_version.version,
+    key="best_training_run_id",
+    value=best_run_id  # ← Direct link to winning training run!
+)
+
+client.set_model_version_tag(
+    name=FULL_MODEL_NAME,
+    version=model_version.version,
+    key="comparison_run_id",
+    value=comparison_run.info.run_id
+)
+
+client.set_model_version_tag(
+    name=FULL_MODEL_NAME,
+    version=model_version.version,
+    key="experiment_group",
+    value=experiment_group_id
+)
+
+client.set_model_version_tag(
+    name=FULL_MODEL_NAME,
+    version=model_version.version,
+    key="validation_status",
+    value="pending"
+)
+
+# Log all training run IDs for reference
+all_training_run_ids = ",".join([r["run_id"] for r in model_results])
+client.set_model_version_tag(
+    name=FULL_MODEL_NAME,
+    version=model_version.version,
+    key="all_training_runs",
+    value=all_training_run_ids
+)
+
+# Set challenger alias
+client.set_registered_model_alias(
+    name=FULL_MODEL_NAME,
+    alias="challenger",
+    version=model_version.version
+)
+
+print(f"✅ Model alias set: challenger")
+print(f"✅ Model tags configured")
+print(f"   - best_training_run_id: {best_run_id}")
+print(f"   - comparison_run_id: {comparison_run.info.run_id}")
+print(f"   - experiment_group: {experiment_group_id}")
+
+# Save best model locally
+print(f"\n{'='*80}")
+print("💾 SAVING MODEL LOCALLY")
+print(f"{'='*80}")
+
+best_model.save(
+    "./best_gepa_rag_dir/",
+    save_program=True
+)
+print("✅ Model saved to ./best_gepa_rag_dir/")
+
+# ==================================================
+# FINAL RESULTS SUMMARY
+# ==================================================
+print(f"\n{'='*80}")
+print("🎉 TRAINING COMPLETE")
+print(f"{'='*80}")
+print(f"\n📊 Results Summary:")
+print(f"   Baseline (Small LM):  {uncompiled_small_lm_accuracy:.2%}")
+print(f"   Baseline (Large LM):  {uncompiled_large_lm_accuracy:.2%}")
+print(f"   GEPA Custom AI Judge: {gepa_custom_accuracy:.2%}")
+print(f"   GEPA SemanticF1:      {gepa_semantic_accuracy:.2%}")
+print(f"\n🏆 Winner: {winner} ({best_accuracy:.2%})")
+print(f"   Registered to UC: {FULL_MODEL_NAME} (v{model_version.version})")
+print(f"   Alias: challenger")
+print(f"\n🔗 Traceability:")
+print(f"   Best Training Run: {best_run_id}")
+print(f"   Comparison Run: {comparison_run.info.run_id}")
+print(f"   Experiment Group: {experiment_group_id}")
+print(f"{'='*80}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Display Final Results
+
+# COMMAND ----------
+
+# Generate table rows dynamically from model results (scalable!)
+table_rows = "\n".join([
+    f"""
+        <tr style="background-color: {'#e8f5e9' if r['name'] == winner else 'white'};">
+            <td style="padding: 10px; border: 1px solid #90caf9;">GEPA</td>
+            <td style="padding: 10px; border: 1px solid #90caf9;">{r['name']}</td>
+            <td style="padding: 10px; border: 1px solid #90caf9;">{r['accuracy']:.2%}</td>
+            <td style="padding: 10px; border: 1px solid #90caf9;">{'🏆 Winner' if r['name'] == winner else ''}</td>
+        </tr>
+    """
+    for r in sorted_results
+])
+
+# Display results in HTML
+displayHTML(f"""
+<div style="font-family: Arial, sans-serif; padding: 20px; background-color: #f0f8ff; border-radius: 10px; border: 2px solid #4CAF50;">
+    <h1 style="color: #2e7d32;">✅ Model Training & Registration Complete</h1>
+    <hr style="border: 1px solid #4CAF50;">
+    
+    <h2 style="color: #1565c0;">🏆 Metric Comparison Results</h2>
+    <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+        <tr style="background-color: #e3f2fd;">
+            <th style="padding: 10px; text-align: left; border: 1px solid #90caf9;">Training Method</th>
+            <th style="padding: 10px; text-align: left; border: 1px solid #90caf9;">Metric Used</th>
+            <th style="padding: 10px; text-align: left; border: 1px solid #90caf9;">Accuracy</th>
+            <th style="padding: 10px; text-align: left; border: 1px solid #90caf9;">Selected</th>
+        </tr>
+        {table_rows}
+    </table>
+    
+    <h2 style="color: #1565c0;">📦 Model Registration Details</h2>
+    <ul style="font-size: 16px; line-height: 1.8;">
+        <li><strong>Model URI:</strong> <code>models:/{FULL_MODEL_NAME}@challenger</code></li>
+        <li><strong>Version:</strong> {model_version.version}</li>
+        <li><strong>Optimization Method:</strong> GEPA</li>
+        <li><strong>Winning Metric:</strong> {winner} ({best_accuracy:.2%})</li>
+        <li><strong>Accuracy Improvement:</strong> {(best_accuracy - runner_up_accuracy):.2%} over runner-up</li>
+        <li><strong>Deployment Alias:</strong> challenger</li>
+        <li><strong>Status:</strong> Ready for testing</li>
+    </ul>
+    
+    <h2 style="color: #1565c0;">🔗 Traceability</h2>
+    <ul style="font-size: 16px; line-height: 1.8;">
+        <li><strong>Best Training Run ID:</strong> <code>{best_run_id}</code></li>
+        <li><strong>Comparison Run ID:</strong> <code>{comparison_run.info.run_id}</code></li>
+        <li><strong>Experiment Group ID:</strong> <code>{experiment_group_id}</code></li>
+        <li><strong>All Training Runs:</strong> {len(model_results)} models compared</li>
+    </ul>
+    
+    <div style="margin-top: 20px; padding: 15px; background-color: #e8f5e9; border-left: 4px solid #4CAF50;">
+        <strong>💡 Tip:</strong> Navigate to the model in Unity Catalog and check the <code>best_training_run_id</code> tag to view the training run that produced this model.
+    </div>
+</div>
+""")

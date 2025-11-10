@@ -245,19 +245,22 @@ dspy_vector_search_tool = dspy.Tool(
     name="vector_search",
     desc="Search for relevant documents using vector similarity"
 )
+
+# COMMAND ----------
+
 class BMAChatAssistant(dspy.Signature):
     """
-    You are a trusted assistant that helps answer questions based only on the provided information.
-    
-    Note: History field is automatically expanded by DSPy into multi-turn conversation format.
-    The history parameter accepts dspy.History objects with messages in format:
-    [{"question": "...", "response": "..."}]
+    You are a trusted assistant that helps answer questions based only on the provided information. 
+    You are given a list of tools to handle the customer's request. You should decide the right tool 
+    to use in order to appropriately answer the customer's question.
     """
-    question: str = dspy.InputField()
-    history: dspy.History = dspy.InputField()
-    response: str = dspy.OutputField(desc="The answer to the customer's question.")
+    context: str = dspy.InputField(desc="The retrieved or provided context to answer the customer's question.")
+    question: str = dspy.InputField(desc="The customer's question that needs to be answered.")
+    history: dspy.History = dspy.InputField(desc="A record of previous conversation turns as question/response pairs.")
+    response: str = dspy.OutputField(desc="The assistant's answer to the customer's question, based solely on the context.")
 
-## CHANGE CHATAGENT FOR RESPONSESAGENT MLFLOW 
+# COMMAND ----------
+
 class DSPyChatAgent(ResponsesAgent):
     """
     A DSPy-based responses agent that uses ReAct pattern with vector search and fallback tools.
@@ -304,9 +307,7 @@ class DSPyChatAgent(ResponsesAgent):
             self.BMAChatAssistant,
             tools=[self.dspy_vector_search_tool, self.not_enough_info_tool]
         )
-        # Note: ReAct may show a warning about missing 'context' field, but this is expected.
-        # ReAct works with any signature per documentation, and uses tools to gather information
-        # dynamically rather than requiring a pre-provided context field. The warning is harmless.
+        # With the context field present in the signature, ReAct will no longer warn about missing 'context'.
     
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         """
@@ -353,7 +354,8 @@ class DSPyChatAgent(ResponsesAgent):
             print(f"[DEBUG DSPyChatAgent] History: {len(history.messages)} turns, Question: {content}")
         
         # Use your DSPy generator
-        response_text = self.answer_generator(question=content, history=history).response
+        # For this chat agent, we don't pre-supply retrieved context, so we pass an empty string.
+        response_text = self.answer_generator(context="", question=content, history=history).response
         
         msg_id = uuid.uuid4().hex
         return ResponsesAgentResponse(
@@ -362,6 +364,7 @@ class DSPyChatAgent(ResponsesAgent):
                 id=msg_id
             )]
         )
+
 # Set model for logging or interactive testing
 AGENT = DSPyChatAgent(max_history_length=max_history_length, enable_history=enable_history)
 set_model(AGENT)
@@ -374,19 +377,6 @@ test_request = ResponsesAgentRequest(
 AGENT.predict(test_request)
 
 # COMMAND ----------
-
-class BMAChatAssistant(dspy.Signature):
-    """
-    You are a trusted assistant that helps answer questions based only on the provided information. You are given a list of tools to handle the customer's request. You should decide the right tool to use in order to appropriately answer the customer's question.
-    
-    Note: History field is automatically expanded by DSPy into multi-turn conversation format.
-    The history parameter accepts dspy.History objects with messages in format:
-    [{"question": "...", "response": "..."}]
-    """
-    context: str = dspy.InputField(desc="The context to answer the customer's question.")
-    question: str = dspy.InputField()
-    history: dspy.History = dspy.InputField()
-    response: str = dspy.OutputField(desc="The answer to the customer's question.")
 
 class RAG(dspy.Module):
     def __init__(self, lm_name, for_mosaic_agent=True, max_history_length=None, enable_history=True):
@@ -410,6 +400,7 @@ class RAG(dspy.Module):
             use_with_databricks_agent_framework=for_mosaic_agent,
         )
 
+        # Reuse the same BMAChatAssistant signature with context
         self.response_generator = dspy.Predict(BMAChatAssistant)
 
     def forward(self, question):
@@ -670,7 +661,7 @@ displayHTML(f"<h1>Uncompiled {larger_lm_name} accuracy: {uncompiled_large_lm_acc
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Log MIPROv2 Optimized Model (Best Practice)
+# MAGIC ## Log MIPROv2 Optimized Model
 
 # COMMAND ----------
 

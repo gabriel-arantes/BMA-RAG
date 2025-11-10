@@ -35,4 +35,6 @@ resources:
         bundle.min_chunk_size: "400"
         bundle.embedding_model: "gte-large-en-v1.5"
         bundle.config_path: "/Workspace/Users/garantes_oc@bma.bm/config/rag_config.json"
+        # AI Parser configuration
+        bundle.ai_parser_version: "1.1"
 

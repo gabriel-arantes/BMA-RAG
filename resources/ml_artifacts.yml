@@ -1,0 +1,44 @@
+# ML Artifacts Configuration
+# This file defines the ML artifacts for the Author DSPy Model pipeline
+
+resources:
+  experiments:
+    bma_dspy_model_experiment:
+      name: "${var.experiment_name}"
+
+  models:
+    bma_dspy_model:
+      name: "${var.model_name}"
+      description: "BMA Author DSPy Model - DSPy-based RAG system for document Q&A"
+      tags:
+        - key: "model_type"
+          value: "dspy_rag"
+        - key: "framework"
+          value: "dspy"
+        - key: "use_case"
+          value: "document_qa"
+        - key: "environment"
+          value: "${var.environment}"
+
+  # Vector Search Index
+  # Note: Vector search indexes are not supported as direct bundle resources.
+  # They must be created and managed separately via the Databricks SDK/API or UI.
+  # The index name and endpoint are referenced by variables and used in the training notebook.
+  # If bundle support is added in the future, uncomment and update the resource definition below.
+  # vector_search_indexes:
+  #   bma_documents_index:
+  #     name: "${var.vector_search_index}"
+  #     endpoint_name: "${var.vector_search_endpoint}"
+  #     description: "Vector search index for BMA documents"
+  #     primary_key: "chunk_id"
+  #     index_schema:
+  #       vector_columns:
+  #         - name: "chunk_embedding"
+  #           vector_size: 1024
+  #       data_columns:
+  #         - name: "chunk_id"
+  #           type: "string"
+  #         - name: "chunk_content"
+  #           type: "string"
+  #         - name: "path"
+  #           type: "string"

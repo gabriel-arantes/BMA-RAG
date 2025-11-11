@@ -1,21 +1,22 @@
-from dlt import *
+# Standard library imports
+import json
 from typing import Dict, Any, List, Optional
+
+# Third-party imports
+from dlt import *
 from pyspark.sql.functions import expr, explode, parse_json, col, to_json, regexp_extract, current_timestamp, md5
 from pyspark.sql.types import ArrayType, StructType, StructField, StringType, FloatType
-import json
 
-# Import rag_utils (from pipeline libraries)
-from rag_utils.chunking.strategies import get_elements_chunking_udf
+# Local imports from rag_utils package
 from rag_utils.chunking.options import ElementsChunkerOptions
+from rag_utils.chunking.strategies import get_elements_chunking_udf
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
 # Create Databricks widgets for runtime configuration
-dbutils.widgets.text("ai_parser_version", "1.1", "AI Parser Version (1.0 or 1.1 / Version 2 should come when DLT is on DBR 17)")
-ai_parser_version = dbutils.widgets.get("ai_parser_version")
-
+ai_parser_version = spark.conf.get("ai_parser_version")
 catalog_name = spark.conf.get("bundle.catalog_name", "test_catalog")
 schema_name = spark.conf.get("bundle.schema_name", "test_schema")
 volume_name = spark.conf.get("bundle.volume_name", "test_volume")

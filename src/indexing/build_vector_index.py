@@ -89,13 +89,10 @@ rag_utils_wheel = dbutils.widgets.get("rag_utils_wheel")
 
 # COMMAND ----------
 
-import sys # not used?
-from databricks.vector_search.client import VectorSearchClient # not used?
-
-# Import rag_utils
+# Import from rag_utils package
+from rag_utils.configs.databricks_config.utils import get_table_url
 from rag_utils.embedding.index_builder import build_retriever_index, get_vector_index_row_count
 from rag_utils.pipelines.data_pipeline_config import DataPipelineOutputConfig
-from rag_utils.configs.databricks_config.utils import get_table_url
 
 # COMMAND ----------
 

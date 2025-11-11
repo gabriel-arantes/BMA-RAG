@@ -33,16 +33,23 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-import dspy
-import mlflow
+# Standard library imports
 import os
 import uuid
 from typing import Optional
-from mlflow.pyfunc import ResponsesAgent
-from mlflow.types.responses import ResponsesAgentRequest, ResponsesAgentResponse
+
+# Third-party imports
+import dspy
+import mlflow
+
+# Databricks imports
 from databricks.vector_search.client import VectorSearchClient
 from databricks.vector_search.reranker import DatabricksReranker
+
+# MLflow imports
 from mlflow.models import set_model
+from mlflow.pyfunc import ResponsesAgent
+from mlflow.types.responses import ResponsesAgentRequest, ResponsesAgentResponse
 
 # COMMAND ----------
 
@@ -594,8 +601,6 @@ print(f"Whitespace only: {whitespace_response.output[0].content}")
 # MAGIC The agent automatically logs traces to MLflow via `mlflow.dspy.autolog()`.
 
 # COMMAND ----------
-
-import mlflow
 
 print("🔹 MLflow Integration Example\n")
 

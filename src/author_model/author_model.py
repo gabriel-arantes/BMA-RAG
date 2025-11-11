@@ -8,18 +8,28 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
+# Standard library imports
+import datetime
+import os
+import random
+import uuid
+
+# Third-party imports
 import dspy
 import mlflow
-import random 
-import os
-import uuid
+import numpy as np
+from dspy.evaluate import Evaluate, SemanticF1
 from dspy.retrievers.databricks_rm import DatabricksRM
-from typing import Any, Optional
-from databricks.sdk.service.dashboards import GenieAPI # not used?
-from databricks.sdk import WorkspaceClient # not used?
-from mlflow.entities import SpanType
+from typing import Optional
+
+# Databricks imports
+from databricks.agents.evals import judges
 from databricks.vector_search.client import VectorSearchClient
 from databricks.vector_search.reranker import DatabricksReranker
+
+# MLflow imports
+from mlflow.models import infer_signature
+from mlflow.models.resources import DatabricksVectorSearchIndex
 
 # COMMAND ----------
 
@@ -451,8 +461,7 @@ len(train_dataset), len(test_dataset)
 
 # COMMAND ----------
 
-#Test in just a single row
-from dspy.evaluate import SemanticF1
+# Test in just a single row
 dspy.configure(lm=dspy.LM(LM))
 metric = SemanticF1(decompositional=True)
 prediction_obj = rag(**example.inputs())
@@ -477,34 +486,11 @@ evaluate(rag)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Optimize using MIPROv2 (COMMENTED OUT - Rate Limiting Issues)
-
-# COMMAND ----------
-
-# MIPROv2 optimization - COMMENTED OUT due to rate limiting issues
-# Uncomment and adjust num_threads if using provisioned throughput endpoints
-#
-# tp = dspy.MIPROv2(metric=metric, auto="medium", num_threads=num_threads)
-# optimized_rag_v2 = tp.compile(
-#     RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history),
-#     trainset=train_dataset,
-#     max_bootstrapped_demos=2,
-#     max_labeled_demos=2
-# )
-#
-# # Evaluate the optimized RAG agent
-# evaluate(optimized_rag_v2)
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ## CREATE CUSTOM EVALUATION METRIC
 # MAGIC We can also use custom AI Judges functions to help us with the evaluation
 
 # COMMAND ----------
 
-from databricks.agents.evals import judges
-import numpy as np
 def validate_retrieval_with_feedback(example, prediction, trace=None, pred_name=None, pred_trace=None):
     """
     Uses Databricks AI judges to validate the retrieval answer and return score (1.0 = correct, 0.0 = incorrect) plus feedback
@@ -552,8 +538,6 @@ def check_accuracy(rag_agent, test_data=None, metric="custom"):
     Returns:
         float: Mean accuracy score (as decimal, e.g. 0.6730) for .2% formatting
     """
-    from dspy.evaluate import Evaluate, SemanticF1
-    
     # Use global test_dataset if not provided
     data = test_data if test_data is not None else globals()['test_dataset']
     
@@ -589,53 +573,6 @@ displayHTML(f"<h1>Uncompiled {larger_lm_name} accuracy: {uncompiled_large_lm_acc
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## MIPROv2 Optimization (COMMENTED OUT - Rate Limiting Issues)
-# MAGIC
-# MAGIC MIPROv2 optimization is currently disabled due to rate limiting issues with pay-per-token endpoints.
-# MAGIC Focus is on GEPA optimization with metric comparison.
-
-# COMMAND ----------
-
-# MIPROv2 optimization - COMMENTED OUT due to rate limiting issues
-# Uncomment and adjust num_threads if using provisioned throughput endpoints
-#
-# from dspy.evaluate import SemanticF1
-# semantic_f1_metric = SemanticF1(decompositional=True)
-# 
-# miprov2_id = str(uuid.uuid4())
-# tp = dspy.MIPROv2(metric=semantic_f1_metric, auto="medium", num_threads=num_threads)
-# 
-# with mlflow.start_run(run_name=f"miprov2_{miprov2_id}"):
-#     optimized_rag_v2 = tp.compile(
-#         RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history),
-#         trainset=train_dataset,
-#         max_bootstrapped_demos=2,
-#         max_labeled_demos=2
-#     )
-#     
-#     miprov2_accuracy = check_accuracy(optimized_rag_v2, metric="semanticf1")
-#     mlflow.log_metric("miprov2_accuracy", miprov2_accuracy)
-#     mlflow.log_metric("baseline_small_accuracy", uncompiled_small_lm_accuracy)
-#     mlflow.log_metric("baseline_large_accuracy", uncompiled_large_lm_accuracy)
-#     
-#     mlflow.log_param("optimization_method", "MIPROv2")
-#     mlflow.log_param("small_lm_name", small_lm_name)
-#     mlflow.log_param("larger_lm_name", larger_lm_name)
-#     mlflow.log_param("reflection_lm_name", reflection_lm_name)
-#     mlflow.log_param("vector_search_endpoint", VECTOR_SEARCH_ENDPOINT)
-#     mlflow.log_param("vector_search_index", VECTOR_SEARCH_INDEX)
-#     mlflow.log_param("catalog", CATALOG)
-#     mlflow.log_param("schema", SCHEMA)
-#     mlflow.log_param("num_threads", num_threads)
-#     mlflow.log_param("max_history_length", max_history_length)
-#     mlflow.log_param("enable_history", enable_history)
-#     
-#     print(f"MIPROv2 model logged successfully!")
-#     print(f"MIPROv2 accuracy: {miprov2_accuracy:.2%}")
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ### GEPA Optimization with Metric Comparison
 # MAGIC
 # MAGIC We train two GEPA models with different metrics and select the best:
@@ -647,7 +584,6 @@ displayHTML(f"<h1>Uncompiled {larger_lm_name} accuracy: {uncompiled_large_lm_acc
 # COMMAND ----------
 
 # Generate unique experiment group ID for linking all related runs
-import datetime
 experiment_group_id = str(uuid.uuid4())
 timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -716,10 +652,6 @@ with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
     mlflow.log_param("experiment_group", experiment_group_id)
     
     # Log the trained model with full UC metadata (signature, input_example, resources)
-    from mlflow.models import infer_signature
-    from mlflow.models.resources import DatabricksVectorSearchIndex
-    
-    # Infer signature by calling the model correctly
     signature_prediction = compiled_gepa_custom(input_example)
     signature = infer_signature(input_example, signature_prediction)
     
@@ -754,7 +686,6 @@ print(f"📊 GEPA TRAINING #2: SemanticF1")
 print(f"Run ID: {id_semantic}")
 print(f"{'='*80}")
 
-from dspy.evaluate import SemanticF1
 semantic_f1_metric = SemanticF1(decompositional=True)
 
 gepa_semantic = dspy.GEPA(
@@ -801,10 +732,6 @@ with mlflow.start_run(run_name=f"gepa_semantic_{id_semantic}") as run_semantic:
     mlflow.log_param("experiment_group", experiment_group_id)
     
     # Log the trained model with full UC metadata (signature, input_example, resources)
-    from mlflow.models import infer_signature
-    from mlflow.models.resources import DatabricksVectorSearchIndex
-    
-    # Infer signature by calling the model correctly
     signature_prediction = compiled_gepa_semantic(input_example)
     signature = infer_signature(input_example, signature_prediction)
     

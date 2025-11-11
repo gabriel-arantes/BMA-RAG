@@ -18,11 +18,8 @@ from typing import Any, Optional
 from databricks.sdk.service.dashboards import GenieAPI # not used?
 from databricks.sdk import WorkspaceClient # not used?
 from mlflow.entities import SpanType
-from mlflow.pyfunc import ResponsesAgent
-from mlflow.types.responses import ResponsesAgentRequest, ResponsesAgentResponse
 from databricks.vector_search.client import VectorSearchClient
 from databricks.vector_search.reranker import DatabricksReranker
-from mlflow.models import set_model
 
 # COMMAND ----------
 
@@ -268,123 +265,6 @@ class BMAChatAssistant(dspy.Signature):
     question: str = dspy.InputField(desc="The customer's question that needs to be answered.")
     history: dspy.History = dspy.InputField(desc="A record of previous conversation turns as question/response pairs.")
     response: str = dspy.OutputField(desc="The assistant's answer to the customer's question, based solely on the context.")
-
-# COMMAND ----------
-
-class DSPyChatAgent(ResponsesAgent):
-    """
-    A DSPy-based responses agent that uses ReAct pattern with vector search and fallback tools.
-    """
-    
-    @staticmethod
-    def not_enough_info() -> str:
-        """
-        Tool called when the assistant is unable to answer the question.
-        
-        Returns:
-            str: A message indicating that the assistant is unable to answer the question.
-        """
-        return ("I'm sorry, I don't have enough information to answer your question. "
-                "Please ask the user to provide more details or ask a different question.")
-    
-    def __init__(self, vector_search_tool: Optional[dspy.Tool] = None, max_history_length=None, enable_history=True):
-        """
-        Initialize the DSPy responses agent.
-        
-        Args:
-            vector_search_tool: Optional pre-configured vector search tool.
-                                If None, uses the default dspy_vector_search_tool.
-            max_history_length: Maximum number of conversation turns to include in history.
-            enable_history: Whether to enable conversation history.
-        """
-        dspy.configure(lm=dspy.LM(LM))
-        mlflow.dspy.autolog()
-        
-        self.BMAChatAssistant = BMAChatAssistant
-        self.dspy_vector_search_tool = vector_search_tool or dspy_vector_search_tool
-        # Use widget values as defaults if not provided
-        self.max_history_length = max_history_length if max_history_length is not None else globals().get('max_history_length', 10)
-        self.enable_history = enable_history if enable_history is not None else globals().get('enable_history', True)
-        
-        # Create not_enough_info tool using static method to avoid circular reference
-        self.not_enough_info_tool = dspy.Tool(
-            func=self.not_enough_info,
-            name="not_enough_info",
-            desc="This tool is called when the assistant is unable to answer the question."
-        )
-        
-        self.answer_generator = dspy.ReAct(
-            self.BMAChatAssistant,
-            tools=[self.dspy_vector_search_tool, self.not_enough_info_tool]
-        )
-        # With the context field present in the signature, ReAct will no longer warn about missing 'context'.
-    
-    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
-        """
-        Generate a response to the messages.
-        
-        Args:
-            request: ResponsesAgentRequest containing input messages
-            
-        Returns:
-            ResponsesAgentResponse containing the assistant's response
-            
-        Raises:
-            ValueError: If messages list is empty
-        """
-        # Convert the request input (list of messages) into your message list
-        user_msgs = request.input  # list of Messages [{role,content},...]
-        
-        if not user_msgs:
-            msg_id = uuid.uuid4().hex
-            return ResponsesAgentResponse(
-                output=[self.create_text_output_item(
-                    text="Messages list cannot be empty",
-                    id=msg_id
-                )]
-            )
-        
-        latest = user_msgs[-1]
-        content = latest.content if hasattr(latest, "content") else latest.get("content", "")
-        
-        if not content or not content.strip():
-            msg_id = uuid.uuid4().hex
-            return ResponsesAgentResponse(
-                output=[self.create_text_output_item(
-                    text="I received an empty message. Could you please rephrase your question?",
-                    id=msg_id
-                )]
-            )
-        
-        # Extract conversation history from messages
-        history = extract_history_from_messages(user_msgs, self.max_history_length, self.enable_history)
-        
-        # Optional debug output (controlled by DSPY_DEBUG_HISTORY environment variable)
-        if os.environ.get("DSPY_DEBUG_HISTORY", "false").lower() == "true":
-            print(f"[DEBUG DSPyChatAgent] History: {len(history.messages)} turns, Question: {content}")
-        
-        # Use your DSPy generator
-        # For this chat agent, we don't pre-supply retrieved context, so we pass an empty string.
-        response_text = self.answer_generator(context="", question=content, history=history).response
-        
-        msg_id = uuid.uuid4().hex
-        return ResponsesAgentResponse(
-            output=[self.create_text_output_item(
-                text=response_text,
-                id=msg_id
-            )]
-        )
-
-# Set model for logging or interactive testing
-AGENT = DSPyChatAgent(max_history_length=max_history_length, enable_history=enable_history)
-set_model(AGENT)
-
-# Test the agent with ResponsesAgent API
-# ResponsesAgentRequest expects input as a list of message dicts or objects
-test_request = ResponsesAgentRequest(
-    input=[{"role": "user", "content": "Who is responsible for remediating the issues with the Customer Risk Assessment for the super low-risk PEP client, and what is the remediation date?"}]
-)
-AGENT.predict(test_request)
 
 # COMMAND ----------
 

@@ -19,6 +19,7 @@ import dspy
 import mlflow
 import numpy as np
 from dspy.evaluate import Evaluate, SemanticF1
+from dspy.experimental import Citations, Document
 from dspy.retrievers.databricks_rm import DatabricksRM
 from typing import Optional
 
@@ -269,12 +270,14 @@ class BMAChatAssistant(dspy.Signature):
     """
     You are a trusted assistant that helps answer questions based only on the provided information. 
     You are given a list of tools to handle the customer's request. You should decide the right tool 
-    to use in order to appropriately answer the customer's question.
+    to use in order to appropriately answer the customer's question. When citing information from 
+    the provided documents, include citations referencing the source documents.
     """
-    context: str = dspy.InputField(desc="The retrieved or provided context to answer the customer's question.")
+    documents: list[Document] = dspy.InputField(desc="The retrieved documents containing context to answer the customer's question.")
     question: str = dspy.InputField(desc="The customer's question that needs to be answered.")
     history: dspy.History = dspy.InputField(desc="A record of previous conversation turns as question/response pairs.")
-    response: str = dspy.OutputField(desc="The assistant's answer to the customer's question, based solely on the context.")
+    response: str = dspy.OutputField(desc="The assistant's answer to the customer's question, based solely on the documents.")
+    citations: Citations = dspy.OutputField(desc="Citations referencing the source documents used in the response.")
 
 # COMMAND ----------
 
@@ -290,7 +293,16 @@ class RAG(dspy.Module):
         self.max_history_length = max_history_length if max_history_length is not None else globals().get('max_history_length', 10)
         self.enable_history = enable_history if enable_history is not None else globals().get('enable_history', True)
 
+        # setup VectorSearchClient for structured retrieval (for citations support)
+        # Note: Citations work with Anthropic/Claude models that support the Citations API
+        self.vs_client = VectorSearchClient(disable_notice=True)
+        self.index = self.vs_client.get_index(
+            endpoint_name=VECTOR_SEARCH_ENDPOINT,
+            index_name=INDEX_PATH
+        )
+
         # setup the primary retriever pointing to the chunked documents
+        # Keep for potential backward compatibility
         self.retriever = DatabricksRM(
             databricks_index_name=INDEX_PATH,
             text_column_name="chunk_content",
@@ -300,8 +312,60 @@ class RAG(dspy.Module):
             use_with_databricks_agent_framework=for_mosaic_agent,
         )
 
-        # Reuse the same BMAChatAssistant signature with context
+        # Reuse the same BMAChatAssistant signature with documents
         self.response_generator = dspy.Predict(BMAChatAssistant)
+    
+    def _retrieve_as_documents(self, query: str) -> list[Document]:
+        """
+        Retrieve documents from vector search and convert to Document objects for citations support.
+        
+        Args:
+            query: The search query string
+            
+        Returns:
+            list[Document]: List of Document objects with chunk content and metadata
+        """
+        try:
+            results = self.index.similarity_search(
+                query_text=query,
+                columns=["chunk_id", "chunk_content", "path"],
+                num_results=5,
+                reranker=DatabricksReranker(
+                    columns_to_rerank=["chunk_content"]
+                )
+            )
+            
+            hits = results['result']['data_array']
+            if not hits:
+                return []
+            
+            columns = [col['name'] for col in results['manifest']['columns']]
+            result_dicts = [dict(zip(columns, row)) for row in hits]
+            
+            # Convert each hit to Document object
+            documents = []
+            for result in result_dicts:
+                chunk_content = result.get('chunk_content', '')
+                chunk_id = result.get('chunk_id', '')
+                path = result.get('path', '')
+                
+                if chunk_content:  # Only create document if content exists
+                    doc = Document(
+                        data=chunk_content,
+                        title=path if path else None,
+                        metadata={
+                            "chunk_id": chunk_id,
+                            "path": path
+                        }
+                    )
+                    documents.append(doc)
+            
+            return documents
+            
+        except Exception as e:
+            # Fallback: return empty list if retrieval fails
+            print(f"Warning: Error retrieving documents: {e}")
+            return []
 
     def forward(self, question):
         # Preserve full question structure for history extraction
@@ -342,10 +406,12 @@ class RAG(dspy.Module):
             # MLflow tracing API might not be available or no active trace
             pass
         
-        context = self.retriever(question_text)
+        # Retrieve documents as Document objects for citations support
+        # Citations are automatically extracted by the LM when Documents are provided
+        documents = self._retrieve_as_documents(question_text)
 
         with dspy.context(lm=self.lm):
-            response = self.response_generator(context=context, question=question_text, history=history)
+            response = self.response_generator(documents=documents, question=question_text, history=history)
             if self.for_mosaic_agent:
                 return response
             return response
@@ -473,6 +539,13 @@ print(f"Question: \t {question_text}\n")
 print(f"Gold Response: \t {example.response}\n")
 print(f"Predicted Response: \t {prediction_obj.response}\n")
 print(f"Semantic F1 Score: {score:.2f}")
+
+# Optionally display citations if available
+if hasattr(prediction_obj, 'citations') and prediction_obj.citations and hasattr(prediction_obj.citations, 'citations'):
+    if prediction_obj.citations.citations:
+        print(f"\nCitations ({len(prediction_obj.citations.citations)}):")
+        for i, citation in enumerate(prediction_obj.citations.citations, 1):
+            print(f"  [{i}] {citation.format()}")
 
 # COMMAND ----------
 

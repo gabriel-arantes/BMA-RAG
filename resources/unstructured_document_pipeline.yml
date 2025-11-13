@@ -1,0 +1,40 @@
+# The main DLT pipeline for unstructured_document_pipeline
+resources:
+  pipelines:
+    unstructured_document_pipeline:
+      name: unstructured_document_pipeline
+      ## Catalog is required for serverless compute
+      catalog: ${var.catalog_name}
+      schema: ${var.schema_name}
+      serverless: true
+      libraries:
+        - file:
+            path: ../src/pipeline/unstructured_datapipeline_stream.py
+      environment:
+        dependencies:
+          - pydantic>=2.0.0
+          - transformers>=4.41.1
+          - tiktoken>=0.8.0
+          - /Volumes/test_catalog/test_schema/libs/rag_utils-0.1.0-py3-none-any.whl
+      configuration:
+        # Workspace-level variables (from bundle)
+        bundle.catalog_name: ${var.catalog_name}
+        bundle.schema_name: ${var.schema_name}
+        bundle.volume_name: ${var.volume_name}
+        # Pipeline-specific configuration defaults
+        # Table names
+        bundle.source_table_name: "ctcbl_raw_files2"
+        bundle.parsed_table_name: "ctcbl_ai_parse2"
+        bundle.chunked_table_name: "ctcbl_chunked_docs2"
+        # Volume paths (constructed from workspace variables)
+        bundle.source_volume_path: "/Volumes/${var.catalog_name}/${var.schema_name}/${var.volume_name}/rag_source_files/"
+        bundle.parsed_volume_path: "/Volumes/${var.catalog_name}/${var.schema_name}/${var.volume_name}/parsed_dir/"
+        bundle.schema_location: "/Volumes/${var.catalog_name}/${var.schema_name}/${var.volume_name}/parsed_dir/schema"
+        # Chunker configuration
+        bundle.max_chunk_size: "4000"
+        bundle.min_chunk_size: "400"
+        bundle.embedding_model: "gte-large-en-v1.5"
+        bundle.config_path: "/Workspace/Users/garantes_oc@bma.bm/config/rag_config.json"
+        # AI Parser configuration
+        bundle.ai_parser_version: "1.1"
+

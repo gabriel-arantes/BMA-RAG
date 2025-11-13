@@ -1,0 +1,96 @@
+# This is a Databricks asset bundle definition for bma-dsai-mde-dspy-v2.
+# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+bundle:
+  name: bma-dsai-mde-dspy-v2
+
+include:
+  - resources/*.yml
+
+variables:
+  # Workspace-level configuration
+  catalog_name:
+    description: "Unity Catalog catalog name"
+    default: "test_catalog"
+  
+  schema_name:
+    description: "Unity Catalog schema name"
+    default: "test_schema"
+  
+  volume_name:
+    description: "Unity Catalog volume name"
+    default: "test_volume"
+  
+  environment:
+    description: "Environment"
+    default: "sandbox"
+  
+  experiment_name:
+    description: "MLflow experiment name for model training runs"
+    default: "/Users/${workspace.current_user.userName}/bma_author_dspy_model_experiment"
+  
+  model_name:
+    description: "Registered model name in Unity Catalog"
+    default: "bma_dspy_model"
+  
+  vector_search_endpoint:
+    description: "Vector search endpoint name for document retrieval"
+    default: "ctcbl-unstructured-endpoint"
+  
+  vector_index_name:
+    description: "Vector search index name containing document embeddings"
+    default: "test_volume_ctcbl_chunked_index_element__v0_0_1"
+  
+  vector_index_embedding_model:
+    description: "Model serving endpoint name for embeddings"
+    default: "databricks-gte-large-en-v1.5"
+  
+  embedding_endpoint:
+    description: "Model serving endpoint name for embeddings"
+    default: "databricks-gte-large-en-v1.5"
+
+targets:
+  dev:
+    # The default target uses 'mode: development' to create a development copy.
+    # - Deployed resources get prefixed with '[dev my_user_name]'
+    # - Any job schedules and triggers are paused by default.
+    # See also https://docs.databricks.com/dev-tools/bundles/deployment-modes.html.
+    mode: development
+    default: true
+    variables:
+      catalog_name: "test_catalog"
+      schema_name: "test_schema"
+      environment: "dev"
+      experiment_name: "/Users/${workspace.current_user.userName}/bma_author_dspy_model_experiment"
+    workspace:
+      host: https://adb-483502050290690.10.azuredatabricks.net
+  
+  staging:
+    mode: production
+    default: false
+    variables:
+      catalog_name: "staging"
+      schema_name: "test_schema"
+      environment: "staging"
+      experiment_name: "/Users/${workspace.current_user.userName}/bma_author_dspy_model_experiment"
+    workspace:
+      host: https://adb-483502050290690.10.azuredatabricks.net
+      root_path: "/Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}"
+    permissions:
+      - user_name: "${workspace.current_user.userName}"
+        level: CAN_MANAGE
+
+  prod:
+    mode: production
+    default: false
+    variables:
+      catalog_name: "prod"
+      schema_name: "test_schema"
+      environment: "prod"
+      experiment_name: "/Users/${workspace.current_user.userName}/bma_author_dspy_model_experiment"
+    workspace:
+      host: https://adb-483502050290690.10.azuredatabricks.net
+      # We explicitly deploy to /Workspace/Users/<user> to make sure we only have a single copy.
+      root_path: "/Workspace/Users/garantes_oc@bma.bm/.bundle/${bundle.name}/${bundle.target}"
+    permissions:
+      - user_name: "${workspace.current_user.userName}"
+        level: CAN_MANAGE

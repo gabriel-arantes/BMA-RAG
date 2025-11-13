@@ -279,76 +279,79 @@ class BMAChatAssistant(dspy.Signature):
 # COMMAND ----------
 
 class RAG(dspy.Module):
-    def __init__(self, lm_name, for_mosaic_agent=True, max_history_length=None, enable_history=True):
-        # setup mlflow tracing
-        mlflow.dspy.autolog()
-
-        # setup flag indicating if the object will be deployed as a Mosaic Agent
+    """
+    Stateless, fully serializable DSPy RAG module.
+    
+    Does NOT capture non-serializable Databricks objects or globals.
+    """
+    
+    def __init__(
+        self,
+        lm_name: str,
+        index_path: str,
+        max_history_length: int = 10,
+        enable_history: bool = True,
+        for_mosaic_agent: bool = True
+    ):
+        super().__init__()
+        self.lm_name = lm_name
+        self.index_path = index_path
+        self.max_history_length = max_history_length
+        self.enable_history = enable_history
         self.for_mosaic_agent = for_mosaic_agent
-        self.lm = dspy.LM(model=f"databricks/{lm_name}")
-        # Use widget values as defaults if not provided
-        self.max_history_length = max_history_length if max_history_length is not None else globals().get('max_history_length', 10)
-        self.enable_history = enable_history if enable_history is not None else globals().get('enable_history', True)
-
-        # setup the primary retriever pointing to the chunked documents
-        self.retriever = DatabricksRM(
-            databricks_index_name=INDEX_PATH,
+        
+        # DSPy Signature wrapper (serializable)
+        self.response_generator = dspy.Predict(BMAChatAssistant)
+    
+    # ---------------------------------------------------------
+    # Lazy builders — do NOT get serialized
+    # ---------------------------------------------------------
+    
+    def build_retriever(self):
+        return DatabricksRM(
+            databricks_index_name=self.index_path,
             text_column_name="chunk_content",
             docs_id_column_name="chunk_id",
             columns=["chunk_id", "chunk_content", "path"],
             k=5,
-            use_with_databricks_agent_framework=for_mosaic_agent,
+            use_with_databricks_agent_framework=self.for_mosaic_agent,
         )
-
-        # Reuse the same BMAChatAssistant signature with context
-        self.response_generator = dspy.Predict(BMAChatAssistant)
-
+    
+    def build_lm(self):
+        return dspy.LM(model=f"databricks/{self.lm_name}")
+    
+    # ---------------------------------------------------------
+    # Core forward method
+    # ---------------------------------------------------------
+    
     def forward(self, question):
-        # Preserve full question structure for history extraction
-        original_question = question
-        
-        # Extract question text for retrieval
-        if self.for_mosaic_agent:
-            if isinstance(question, dict) and "messages" in question:
-                question_text = question["messages"][-1]["content"]
-                # Extract history from messages
-                history = extract_history_from_messages(question["messages"], self.max_history_length, self.enable_history)
-            else:
-                question_text = question
-                history = dspy.History(messages=[])
+        # Extract question text
+        if isinstance(question, dict) and "messages" in question:
+            messages = question["messages"]
+            question_text = messages[-1]["content"]
+            history = extract_history_from_messages(
+                messages,
+                max_length=self.max_history_length,
+                enable_history=self.enable_history
+            )
         else:
-            # For non-mosaic agent, extract history if question is a dict with messages
-            if isinstance(question, dict) and "messages" in question:
-                question_text = question["messages"][-1]["content"] if question["messages"] else str(question)
-                history = extract_history_from_messages(question["messages"], self.max_history_length, self.enable_history)
-            else:
-                question_text = question
-                history = dspy.History(messages=[])
-
-        # Optional debug output (controlled by DSPY_DEBUG_HISTORY environment variable)
-        if os.environ.get("DSPY_DEBUG_HISTORY", "false").lower() == "true":
-            print(f"[DEBUG RAG] History: {len(history.messages)} turns, Question: {question_text}")
-
-        # Update trace tags if there's an active trace context
-        # Note: mlflow.dspy.autolog() creates traces automatically during normal DSPy operations,
-        # but during optimization bootstrapping (MIPROv2/GEPA), forward() may be called
-        # without an active trace, causing warnings. Check for active trace before updating.
-        try:
-            # Check if there's an active trace before trying to update
-            trace_id = mlflow.tracing.get_current_trace_id()
-            if trace_id is not None:
-                mlflow.update_current_trace(tags={"agent": "dspy_rag_demo"})
-        except (AttributeError, Exception):
-            # MLflow tracing API might not be available or no active trace
-            pass
+            question_text = question
+            history = dspy.History(messages=[])
         
-        context = self.retriever(question_text)
-
-        with dspy.context(lm=self.lm):
-            response = self.response_generator(context=context, question=question_text, history=history)
-            if self.for_mosaic_agent:
-                return response
-            return response
+        # Build components lazily (NOT serialized)
+        retriever = self.build_retriever()
+        lm = self.build_lm()
+        
+        # Retrieve context
+        context = retriever(question_text)
+        
+        # Generate response
+        with dspy.context(lm=lm):
+            return self.response_generator(
+                context=context,
+                question=question_text,
+                history=history
+            )
 
 # COMMAND ----------
 
@@ -358,7 +361,12 @@ class RAG(dspy.Module):
 # COMMAND ----------
 
 
-rag = RAG(lm_name=small_lm_name, max_history_length=max_history_length, enable_history=enable_history)
+rag = RAG(
+    lm_name=small_lm_name,
+    index_path=INDEX_PATH,
+    max_history_length=max_history_length,
+    enable_history=enable_history
+)
 
 result = rag({'messages': [{'content': 'Who is responsible for remediating the issues with the Customer Risk Assessment for the high-risk PEP client, and what is the remediation date?', 'role': 'user'}]})
 
@@ -560,13 +568,25 @@ def check_accuracy(rag_agent, test_data=None, metric="custom"):
 
 # COMMAND ----------
 
-uncompiled_rag = RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history)
+uncompiled_rag = RAG(
+    lm_name=small_lm_name,
+    index_path=INDEX_PATH,
+    max_history_length=max_history_length,
+    enable_history=enable_history,
+    for_mosaic_agent=True
+)
 uncompiled_small_lm_accuracy=check_accuracy(uncompiled_rag)
 displayHTML(f"<h1>Uncompiled {small_lm_name} accuracy: {uncompiled_small_lm_accuracy}</h1>")
 
 # COMMAND ----------
 
-uncompiled_large_lm_accuracy=check_accuracy(RAG(lm_name=larger_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history))
+uncompiled_large_lm_accuracy=check_accuracy(RAG(
+    lm_name=larger_lm_name,
+    index_path=INDEX_PATH,
+    max_history_length=max_history_length,
+    enable_history=enable_history,
+    for_mosaic_agent=True
+))
 displayHTML(f"<h1>Uncompiled {larger_lm_name} accuracy: {uncompiled_large_lm_accuracy}</h1>")
 
 # COMMAND ----------
@@ -626,7 +646,13 @@ with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
     mlflow.set_tag("role", "training")
     
     compiled_gepa_custom = gepa_custom.compile(
-        RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history),
+        RAG(
+            lm_name=small_lm_name,
+            index_path=INDEX_PATH,
+            max_history_length=max_history_length,
+            enable_history=enable_history,
+            for_mosaic_agent=True
+        ),
         trainset=train_dataset
     )
     
@@ -706,7 +732,13 @@ with mlflow.start_run(run_name=f"gepa_semantic_{id_semantic}") as run_semantic:
     mlflow.set_tag("role", "training")
     
     compiled_gepa_semantic = gepa_semantic.compile(
-        RAG(lm_name=small_lm_name, for_mosaic_agent=True, max_history_length=max_history_length, enable_history=enable_history),
+        RAG(
+            lm_name=small_lm_name,
+            index_path=INDEX_PATH,
+            max_history_length=max_history_length,
+            enable_history=enable_history,
+            for_mosaic_agent=True
+        ),
         trainset=train_dataset
     )
     

@@ -1,0 +1,54 @@
+# Champion vs Challenger Evaluation Workflow
+# This job compares the champion and challenger models and promotes the challenger if it performs better
+
+resources:
+  jobs:
+    champion_challenger_evaluation:
+      name: "champion_challenger_evaluation"
+      description: "Automated evaluation comparing champion and challenger models with automatic promotion"
+      
+      tags:
+        framework: "mlflow"
+        purpose: "model_evaluation"
+      
+      # Task definitions
+      tasks:
+        - task_key: evaluate_and_promote
+          # Notebook task (serverless)
+          # Dependencies are installed via %pip commands in the notebook itself
+          notebook_task:
+            notebook_path: ../src/evaluation/champion_challenger_evaluation.py
+            source: WORKSPACE
+            base_parameters:
+              # Model configuration
+              catalog_name: "${var.catalog_name}"
+              schema_name: "${var.schema_name}"
+              model_name: "${var.model_name}"
+              
+              # Serving endpoint configuration
+              serving_endpoint_name: "${var.serving_endpoint_name}"
+              serving_endpoint_workload_type: "${var.serving_endpoint_workload_type}"
+              serving_endpoint_workload_size: "${var.serving_endpoint_workload_size}"
+              serving_endpoint_scale_to_zero: "${var.serving_endpoint_scale_to_zero}"
+              
+              # Optional inference table configuration (leave empty to skip)
+              inference_table_catalog: "${var.inference_table_catalog}"
+              inference_table_schema: "${var.inference_table_schema}"
+              inference_table_name: "${var.inference_table_name}"
+      
+      # Optional: Schedule configuration
+      # Uncomment to run automatically on a schedule
+      schedule:
+        quartz_cron_expression: "0 0 9 ? * MON"  # Weekly on Mondays at 9 AM
+        timezone_id: "UTC"
+        pause_status: "PAUSED"
+      
+      # Optional: Email notifications
+      # email_notifications:
+      #   on_failure:
+      #     - "your-email@example.com"
+      
+      # Timeout settings
+      timeout_seconds: 1800  # 30 minutes
+      max_concurrent_runs: 1
+

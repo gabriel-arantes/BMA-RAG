@@ -359,7 +359,6 @@ class RAG(dspy.Module):
 
 
 rag = RAG(lm_name=small_lm_name, max_history_length=max_history_length, enable_history=enable_history)
-simple_rag = RAG(lm_name=small_lm_name, for_mosaic_agent=False, max_history_length=max_history_length, enable_history=enable_history)
 
 result = rag({'messages': [{'content': 'Who is responsible for remediating the issues with the Customer Risk Assessment for the high-risk PEP client, and what is the remediation date?', 'role': 'user'}]})
 

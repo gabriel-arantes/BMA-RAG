@@ -47,6 +47,36 @@ variables:
   embedding_endpoint:
     description: "Model serving endpoint name for embeddings"
     default: "databricks-gte-large-en-v1.5"
+  
+  # Champion model serving endpoint configuration
+  serving_endpoint_name:
+    description: "Name of the serving endpoint for champion model"
+    default: "bma_dspy_endpoint"
+  
+  serving_endpoint_workload_type:
+    description: "Serving endpoint workload type (GPU_SMALL, GPU_MEDIUM, GPU_LARGE, CPU)"
+    default: "GPU_SMALL"
+  
+  serving_endpoint_workload_size:
+    description: "Serving endpoint workload size (Small, Medium, Large)"
+    default: "Small"
+  
+  serving_endpoint_scale_to_zero:
+    description: "Enable scale-to-zero for serving endpoint"
+    default: "true"
+  
+  # Optional inference table configuration (leave empty to skip)
+  inference_table_catalog:
+    description: "Catalog for inference tracking table (optional)"
+    default: "test_catalog"
+  
+  inference_table_schema:
+    description: "Schema for inference tracking table (optional)"
+    default: "test_schema"
+  
+  inference_table_name:
+    description: "Name prefix for inference tracking table (optional)"
+    default: "dspy_inference_table"
 
 targets:
   dev:
@@ -61,6 +91,7 @@ targets:
       schema_name: "test_schema"
       environment: "dev"
       experiment_name: "/Users/${workspace.current_user.userName}/bma_author_dspy_model_experiment"
+      serving_endpoint_name: "bma_dspy_endpoint_dev"
     workspace:
       host: https://adb-483502050290690.10.azuredatabricks.net
   
@@ -72,6 +103,7 @@ targets:
       schema_name: "test_schema"
       environment: "staging"
       experiment_name: "/Users/${workspace.current_user.userName}/bma_author_dspy_model_experiment"
+      serving_endpoint_name: "bma_dspy_endpoint_staging"
     workspace:
       host: https://adb-483502050290690.10.azuredatabricks.net
       root_path: "/Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}"
@@ -87,6 +119,10 @@ targets:
       schema_name: "test_schema"
       environment: "prod"
       experiment_name: "/Users/${workspace.current_user.userName}/bma_author_dspy_model_experiment"
+      serving_endpoint_name: "bma_dspy_endpoint_prod"
+      inference_table_catalog: "prod"
+      inference_table_schema: "model_tracking"
+      inference_table_name: "dspy_model_inference"
     workspace:
       host: https://adb-483502050290690.10.azuredatabricks.net
       # We explicitly deploy to /Workspace/Users/<user> to make sure we only have a single copy.

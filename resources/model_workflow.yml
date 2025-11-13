@@ -30,8 +30,7 @@ resources:
       # Task definitions
       tasks:
         - task_key: author_dspy_model
-          job_cluster_key: "training_cluster" 
-          # Notebook task (serverless)
+          # job_cluster_key: "training_cluster" #commenting for serverless
           # Dependencies are installed via %pip commands in the notebook itself
           notebook_task:
             notebook_path: ../src/author_model/author_model.py

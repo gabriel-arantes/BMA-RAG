@@ -76,7 +76,7 @@ variables:
   
   inference_table_name:
     description: "Name prefix for inference tracking table (optional)"
-    default: "dspy_inference_table"
+    default: "bma_dspy_inference_table"
 
 targets:
   dev:
@@ -122,7 +122,7 @@ targets:
       serving_endpoint_name: "bma_dspy_endpoint_prod"
       inference_table_catalog: "prod"
       inference_table_schema: "model_tracking"
-      inference_table_name: "dspy_model_inference"
+      inference_table_name: "bma_dspy_inference_table"
     workspace:
       host: https://adb-483502050290690.10.azuredatabricks.net
       # We explicitly deploy to /Workspace/Users/<user> to make sure we only have a single copy.

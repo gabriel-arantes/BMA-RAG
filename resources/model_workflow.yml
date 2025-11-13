@@ -11,24 +11,26 @@ resources:
         framework: "dspy"
       
       # Job configuration
-#      job_clusters:
-#        - job_cluster_key: "training_cluster" 
-#          new_cluster:
-#            spark_version: "17.1.x-cpu-ml-scala2.12"
-#            node_type_id: "m5d.2xlarge"
-#            num_workers: 0
-#            spark_conf:
-#              "spark.databricks.cluster.profile": "singleNode"
-#              "spark.master": "local[*]"
-#              "spark.databricks.delta.preview.enabled": "true"
-#              "spark.databricks.delta.retentionDurationCheck.enabled": "false" # usefull for testing but not production
-#            custom_tags:
-#              purpose: "ml_training"
-#              environment: "${var.environment}"
+      job_clusters:
+        - job_cluster_key: "training_cluster" 
+          new_cluster:
+            spark_version: "16.4.x-cpu-ml-scala2.12"
+            node_type_id: "Standard_D8s_v5"
+            num_workers: 0
+            spark_conf:
+              "spark.databricks.cluster.profile": "singleNode"
+              "spark.master": "local[*]"
+              "spark.databricks.delta.preview.enabled": "true"
+              "spark.databricks.delta.retentionDurationCheck.enabled": "false" # usefull for testing but not production
+            custom_tags:
+              purpose: "ml_training"
+              environment: "${var.environment}"
+              ResourceClass: SingleNode
       
       # Task definitions
       tasks:
         - task_key: author_dspy_model
+          job_cluster_key: "training_cluster" 
           # Notebook task (serverless)
           # Dependencies are installed via %pip commands in the notebook itself
           notebook_task:
@@ -91,4 +93,4 @@ resources:
       
       # Timeout settings
       timeout_seconds: 5400  # 1.5 hours
-      max_concurrent_runs: 1
+      max_concurrent_runs: 3  # Allow up to 3 concurrent training runs

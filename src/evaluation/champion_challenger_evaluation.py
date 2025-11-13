@@ -1,13 +1,9 @@
 # Databricks notebook source
-# MAGIC %pip install --index-url https://pypi.org/simple mlflow[databricks]>=3.1.0 databricks-agents databricks-sdk pyyaml
+# MAGIC %pip install --index-url https://pypi.org/simple mlflow[databricks]>=3.1.0 databricks-agents databricks-sdk pyyaml dspy databricks-vectorsearch databricks-dspy
 
 # COMMAND ----------
 
 dbutils.library.restartPython()
-
-# COMMAND ----------
-
-# MAGIC %run ./helper
 
 # COMMAND ----------
 
@@ -17,19 +13,19 @@ dbutils.library.restartPython()
 # MAGIC This notebook compares the current **Champion** and **Challenger** models, automatically promotes the challenger to champion if it performs better, and deploys the winning model to a serving endpoint.
 # MAGIC
 # MAGIC ## How It Works
-# MAGIC 1. Load both models by alias (champion and challenger)
-# MAGIC 2. Auto-detect model flavor (works with any MLflow model)
-# MAGIC 3. Evaluate both on the same test dataset using AI Judge
-# MAGIC 4. Promote challenger to champion if it wins
-# MAGIC 5. Deploy/update the champion model to a serving endpoint
-# MAGIC 6. Test the endpoint to ensure it's working
+# MAGIC 1. Load both DSPy models by alias (champion and challenger)
+# MAGIC 2. Evaluate both on the same test dataset using AI Judge
+# MAGIC 3. Promote challenger to champion if it wins
+# MAGIC 4. Deploy/update the champion model to a serving endpoint using Agent Framework
+# MAGIC 5. Test the endpoint to ensure it's working
 
 # COMMAND ----------
 
 import mlflow
-import yaml
+import pandas as pd
 from typing import List, Dict
 from databricks.agents.evals import judges
+from databricks import agents
 
 # Set MLflow registry to Unity Catalog
 mlflow.set_registry_uri("databricks-uc")
@@ -47,10 +43,10 @@ dbutils.widgets.text("schema_name", "test_schema", "Schema Name")
 dbutils.widgets.text("model_name", "bma_dspy_model", "Model Name")
 
 # Serving endpoint parameters
-dbutils.widgets.text("serving_endpoint_name", "bma_champion_endpoint", "Serving Endpoint Name")
+dbutils.widgets.text("serving_endpoint_name", "bma_dspy_endpoint", "Serving Endpoint Name")
 dbutils.widgets.text("serving_endpoint_workload_type", "GPU_SMALL", "Workload Type (GPU_SMALL/GPU_MEDIUM/GPU_LARGE/CPU)")
 dbutils.widgets.text("serving_endpoint_workload_size", "Small", "Workload Size (Small/Medium/Large)")
-dbutils.widgets.dropdown("serving_endpoint_scale_to_zero", "false", ["true", "false"], "Scale to Zero")
+dbutils.widgets.dropdown("serving_endpoint_scale_to_zero", "true", ["true", "false"], "Scale to Zero")
 
 # Optional inference table parameters (leave empty to skip)
 dbutils.widgets.text("inference_table_catalog", "", "Inference Table Catalog (optional)")
@@ -74,8 +70,7 @@ inference_table_schema = dbutils.widgets.get("inference_table_schema")
 inference_table_name = dbutils.widgets.get("inference_table_name")
 
 # Get workspace context (host and token from notebook)
-workspace_url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().tags().get("browserHostName").get()
-workspace_host = f"https://{workspace_url}"
+workspace_host = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
 workspace_token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
 
 # Full model name for Unity Catalog
@@ -114,61 +109,87 @@ print(f"Loaded {len(eval_data)} evaluation examples")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Flavor-Agnostic Model Loading
+# MAGIC ## DSPy Model Loading
 # MAGIC 
-# MAGIC These functions automatically detect and load any MLflow model type (pyfunc, sklearn, langchain, DSPy, etc.)
+# MAGIC Load and evaluate DSPy models from Unity Catalog
 
 # COMMAND ----------
 
-def load_model_info_for_alias(model_name: str, alias: str):
+def load_dspy_model_by_alias(model_name: str, alias: str):
     """
-    Load model by alias and auto-identify its flavor.
+    Load DSPy model by alias from Unity Catalog.
     
     Returns:
-        tuple: (model_uri, flavor, version)
+        tuple: (model, version)
     """
-    # Get version info first
+    # Get version info
     client = mlflow.tracking.MlflowClient(registry_uri="databricks-uc")
     model_info = client.get_model_version_by_alias(model_name, alias)
     version = model_info.version
     
-    # Use versioned URI for artifact download (more reliable than alias)
-    versioned_uri = f"models:/{model_name}/{version}"
+    # Load model with versioned URI (more reliable)
+    model_uri = f"models:/{model_name}/{version}"
     
-    # Download MLmodel YAML to detect flavor
-    local_path = mlflow.artifacts.download_artifacts(artifact_uri=versioned_uri + "/MLmodel")
+    print(f"   Loading model from URI: {model_uri}")
+    print(f"   Testing model loading and inference...")
     
-    with open(local_path, "r") as f:
-        mlmodel_yaml = yaml.safe_load(f)
-    
-    # Get model flavor
-    flavors = list(mlmodel_yaml.get("flavors", {}).keys())
-    flavor = flavors[0] if flavors else "pyfunc"
-    
-    # Return with alias-based URI for consistency
-    model_uri = f"models:/{model_name}@{alias}"
-    
-    return model_uri, flavor, version
+    try:
+        # Load the model
+        model = mlflow.dspy.load_model(model_uri)
+        print(f"   ✅ Model loaded successfully")
+        
+        # Test with a simple inference to ensure it works
+        test_input = {'messages': [{'content': 'Test question', 'role': 'user'}]}
+        print(f"   Testing inference with sample input...")
+        
+        # Try the same inference approach we'll use in evaluation
+        try:
+            if hasattr(model, 'predict'):
+                test_result = model.predict(test_input)
+            else:
+                test_result = model(test_input)
+            print(f"   ✅ Inference test successful!")
+            print(f"   Response type: {type(test_result)}")
+        except Exception as inference_error:
+            print(f"   ⚠️  Inference test failed: {inference_error}")
+            print(f"   Will attempt alternative loading methods...")
+            import traceback
+            traceback.print_exc()
+        
+        return model, version
+        
+    except Exception as e:
+        print(f"   ❌ Model loading failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
-def infer(model_uri: str, flavor: str, input_data):
+def infer_dspy(model, input_data):
     """
-    Flavor-agnostic inference function using MLflow's pyfunc interface.
-    
-    All MLflow models (regardless of flavor) provide a unified pyfunc interface.
-    This approach avoids serialization issues and works consistently across all model types.
+    Run inference on a DSPy model.
     
     Args:
-        model_uri: MLflow model URI
-        flavor: Model flavor (for logging/display only, not used for loading)
-        input_data: Input for prediction (format depends on model)
+        model: Loaded DSPy model
+        input_data: Dict with 'messages' key
         
     Returns:
         Model prediction output
     """
-    # Always use pyfunc interface - it's the standard MLflow inference API
-    model = mlflow.pyfunc.load_model(model_uri)
-    return model.predict(input_data)
+    # Try predict() method first (MLflow wrapper), fallback to direct call
+    try:
+        if hasattr(model, 'predict'):
+            return model.predict(input_data)
+        else:
+            return model(input_data)
+    except Exception as e:
+        # If wrapped, try accessing underlying model
+        if hasattr(model, '_model'):
+            return model._model(input_data)
+        elif hasattr(model, 'model'):
+            return model.model(input_data)
+        else:
+            raise e
 
 # COMMAND ----------
 
@@ -179,13 +200,12 @@ def infer(model_uri: str, flavor: str, input_data):
 
 # COMMAND ----------
 
-def evaluate_model(model_uri: str, flavor: str, eval_dataset: List[Dict]) -> float:
+def evaluate_model(model, eval_dataset: List[Dict]) -> float:
     """
-    Evaluate a model on the test dataset using AI Judge.
+    Evaluate a DSPy model on the test dataset using AI Judge.
     
     Args:
-        model_uri: MLflow model URI
-        flavor: Model flavor
+        model: Loaded DSPy model
         eval_dataset: List of evaluation examples
         
     Returns:
@@ -197,12 +217,12 @@ def evaluate_model(model_uri: str, flavor: str, eval_dataset: List[Dict]) -> flo
         question = example["question"]
         expected = example["expected"]
         
-        # Format input for DSPy models (supports Mosaic Agent format)
+        # DSPy input format
         input_data = {'messages': [{'content': question, 'role': 'user'}]}
         
         try:
             # Get model prediction
-            prediction = infer(model_uri, flavor, input_data)
+            prediction = infer_dspy(model, input_data)
             
             # Extract response text from prediction
             if hasattr(prediction, 'response'):
@@ -250,36 +270,37 @@ with mlflow.start_run(run_name="champion_challenger_evaluation") as run:
     # Load Champion model
     print("\n📥 Loading Champion model...")
     try:
-        champion_uri, champion_flavor, champion_version = load_model_info_for_alias(FULL_MODEL_NAME, "champion")
-        print(f"✅ Champion: Version {champion_version} (Flavor: {champion_flavor})")
+        champion_model, champion_version = load_dspy_model_by_alias(FULL_MODEL_NAME, "champion")
+        print(f"✅ Champion: Version {champion_version}")
         mlflow.log_param("champion_version", champion_version)
-        mlflow.log_param("champion_flavor", champion_flavor)
+        mlflow.log_param("model_type", "dspy")
     except Exception as e:
         print(f"❌ Error loading Champion: {e}")
         print("⚠️  Note: If this is the first run, no champion exists yet. Set the challenger as champion manually first.")
-        dbutils.notebook.exit("NO_CHAMPION")
+        #dbutils.notebook.exit("NO_CHAMPION")
     
     # Load Challenger model
     print("\n📥 Loading Challenger model...")
     try:
-        challenger_uri, challenger_flavor, challenger_version = load_model_info_for_alias(FULL_MODEL_NAME, "challenger")
-        print(f"✅ Challenger: Version {challenger_version} (Flavor: {challenger_flavor})")
+        challenger_model, challenger_version = load_dspy_model_by_alias(FULL_MODEL_NAME, "challenger")
+        print(f"✅ Challenger: Version {challenger_version}")
         mlflow.log_param("challenger_version", challenger_version)
-        mlflow.log_param("challenger_flavor", challenger_flavor)
     except Exception as e:
         print(f"❌ Error loading Challenger: {e}")
         print("⚠️  No challenger model found. Nothing to evaluate.")
-        dbutils.notebook.exit("NO_CHALLENGER")
-    
+        #dbutils.notebook.exit("NO_CHALLENGER")
+
+# COMMAND ----------
+
     # Evaluate Champion
     print("\n⚖️  Evaluating Champion...")
-    champion_accuracy = evaluate_model(champion_uri, champion_flavor, eval_data)
+    champion_accuracy = evaluate_model(champion_model, eval_data)
     print(f"   Champion Accuracy: {champion_accuracy:.2%}")
     mlflow.log_metric("champion_accuracy", champion_accuracy)
     
     # Evaluate Challenger
     print("\n⚖️  Evaluating Challenger...")
-    challenger_accuracy = evaluate_model(challenger_uri, challenger_flavor, eval_data)
+    challenger_accuracy = evaluate_model(challenger_model, eval_data)
     print(f"   Challenger Accuracy: {challenger_accuracy:.2%}")
     mlflow.log_metric("challenger_accuracy", challenger_accuracy)
     
@@ -335,98 +356,58 @@ with mlflow.start_run(run_name="champion_challenger_evaluation") as run:
     mlflow.log_param("winner", winner)
     mlflow.log_param("evaluation_dataset_size", len(eval_data))
     
-    # Deploy/Update Model Serving Endpoint
+    # Deploy/Update Model Serving Endpoint using Databricks Agent Framework
     print("\n" + "=" * 80)
-    print("🚀 DEPLOYING CHAMPION MODEL TO SERVING ENDPOINT")
+    print("🚀 DEPLOYING CHAMPION MODEL USING DATABRICKS AGENT FRAMEWORK")
     print("=" * 80)
     
     try:
-        # Import serving utilities
-        from databricks.sdk.service.serving import EndpointCoreConfigInput
-        import time
+        import requests
         
-        # Get model optimization info
-        print(f"\n📊 Checking model optimization capabilities for version {promoted_version}...")
-        optimizable_info = get_model_optimization_info(FULL_MODEL_NAME, promoted_version, workspace_host, workspace_token)
-        is_optimizable = optimizable_info.get("optimizable", False)
+        # Use Databricks Agent Framework for deployment
+        # This handles DSPy signatures correctly and provides additional features
+        print(f"\n🔧 Deploying champion model v{promoted_version} to endpoint...")
+        print(f"   Model: {FULL_MODEL_NAME}")
+        print(f"   Version: {promoted_version}")
+        print(f"   Scale to zero: {serving_endpoint_scale_to_zero}")
         
-        print(f"   Optimizable: {is_optimizable}")
-        mlflow.log_param("model_optimizable", is_optimizable)
+        # Deploy using Agent Framework
+        deployment = agents.deploy(
+            model_name=FULL_MODEL_NAME,
+            model_version=promoted_version,
+            scale_to_zero_enabled=(serving_endpoint_scale_to_zero == "true")
+        )
         
-        # Build endpoint configuration
-        endpoint_config_dict = {}
+        print(f"\n✅ Endpoint deployed successfully!")
+        print(f"   Endpoint URL: {deployment.query_endpoint}")
         
-        if is_optimizable:
-            # Use provisioned throughput for optimizable models
-            chunk_size = optimizable_info['throughput_chunk_size']
-            min_provisioned_throughput = 0
-            max_provisioned_throughput = 2 * chunk_size
-            
-            print(f"   Using provisioned throughput: {min_provisioned_throughput} - {max_provisioned_throughput}")
-            
-            endpoint_config_dict = { 
-                "served_entities": [
-                    {
-                        "entity_name": FULL_MODEL_NAME,
-                        "entity_version": promoted_version,
-                        "workload_size": serving_endpoint_workload_size,
-                        "scale_to_zero_enabled": serving_endpoint_scale_to_zero,
-                        "workload_type": serving_endpoint_workload_type,
-                        "min_provisioned_throughput": min_provisioned_throughput,
-                        "max_provisioned_throughput": max_provisioned_throughput
-                    }
-                ]
-            }
+        # Test the deployed endpoint with Agent Framework format
+        print(f"\n🧪 Testing endpoint...")
+        
+        # Agent Framework uses direct message format
+        test_query = {
+            "messages": [
+                {"role": "user", "content": "What is the audit rating?"}
+            ]
+        }
+        
+        response = requests.post(
+            deployment.query_endpoint,
+            json=test_query,
+            headers={"Authorization": f"Bearer {workspace_token}"}
+        )
+        
+        if response.status_code == 200:
+            print(f"✅ Endpoint test successful!")
+            print(f"   Response preview: {response.text[:200]}...")
         else:
-            # Standard GPU configuration for non-optimizable models
-            print(f"   Using standard GPU configuration: {serving_endpoint_workload_type} / {serving_endpoint_workload_size}")
-            
-            endpoint_config_dict = { 
-                "served_entities": [
-                    {
-                        "entity_name": FULL_MODEL_NAME,
-                        "entity_version": promoted_version,
-                        "workload_size": serving_endpoint_workload_size,
-                        "scale_to_zero_enabled": serving_endpoint_scale_to_zero,
-                        "workload_type": serving_endpoint_workload_type,
-                        "environment_vars": {
-                            "DATABRICKS_HOST": f"{workspace_host}",
-                            "DATABRICKS_TOKEN": f"{workspace_token}"
-                        }
-                    }
-                ]
-            }
+            print(f"⚠️  Endpoint test returned {response.status_code}: {response.text[:200]}...")
         
-        # Add inference table configuration if provided
-        if inference_table_catalog and inference_table_schema and inference_table_name:
-            print(f"   Enabling inference table: {inference_table_catalog}.{inference_table_schema}.{inference_table_name}")
-            endpoint_config_dict["auto_capture_config"] = {
-                "catalog_name": f"{inference_table_catalog}",
-                "schema_name": f"{inference_table_schema}",
-                "table_name_prefix": f"{inference_table_name}"
-            }
-            mlflow.log_param("inference_table_enabled", True)
-        else:
-            mlflow.log_param("inference_table_enabled", False)
-        
-        endpoint_config = EndpointCoreConfigInput.from_dict(endpoint_config_dict)
-        
-        # Deploy or update the endpoint
-        print(f"\n🔧 Deploying champion model (v{promoted_version}) to endpoint: {serving_endpoint_name}")
-        deploy_model_serving_endpoint(serving_endpoint_name, endpoint_config, workspace_host)
-        
-        # Wait a bit for the endpoint to be ready
-        print("\n⏳ Waiting for endpoint to be ready...")
-        time.sleep(15)
-        
-        # Test the endpoint
-        print(f"\n🧪 Testing endpoint: {serving_endpoint_name}")
-        test_serving_endpoint(serving_endpoint_name, workspace_host, workspace_token)
-        
-        print(f"\n✅ Endpoint {serving_endpoint_name} is live and serving champion model v{promoted_version}")
         mlflow.log_param("endpoint_deployed", True)
         mlflow.log_param("endpoint_name", serving_endpoint_name)
+        mlflow.log_param("endpoint_url", deployment.query_endpoint)
         mlflow.log_param("deployed_model_version", promoted_version)
+        mlflow.log_param("deployment_method", "agent_framework")
         
     except Exception as e:
         print(f"\n❌ Error deploying endpoint: {e}")
@@ -457,21 +438,18 @@ html_report = f"""
         <tr style="background-color: #e3f2fd;">
             <th style="padding: 10px; text-align: left; border: 1px solid #90caf9;">Model</th>
             <th style="padding: 10px; text-align: left; border: 1px solid #90caf9;">Version</th>
-            <th style="padding: 10px; text-align: left; border: 1px solid #90caf9;">Flavor</th>
             <th style="padding: 10px; text-align: left; border: 1px solid #90caf9;">Accuracy</th>
             <th style="padding: 10px; text-align: left; border: 1px solid #90caf9;">Result</th>
         </tr>
         <tr style="background-color: {'#e8f5e9' if winner == 'champion' else 'white'};">
             <td style="padding: 10px; border: 1px solid #90caf9;">Champion</td>
             <td style="padding: 10px; border: 1px solid #90caf9;">{champion_version}</td>
-            <td style="padding: 10px; border: 1px solid #90caf9;">{champion_flavor}</td>
             <td style="padding: 10px; border: 1px solid #90caf9;">{champion_accuracy:.2%}</td>
             <td style="padding: 10px; border: 1px solid #90caf9;">{'🏆 Winner' if winner == 'champion' else ''}</td>
         </tr>
         <tr style="background-color: {'#e8f5e9' if winner == 'challenger' else 'white'};">
             <td style="padding: 10px; border: 1px solid #90caf9;">Challenger</td>
             <td style="padding: 10px; border: 1px solid #90caf9;">{challenger_version}</td>
-            <td style="padding: 10px; border: 1px solid #90caf9;">{challenger_flavor}</td>
             <td style="padding: 10px; border: 1px solid #90caf9;">{challenger_accuracy:.2%}</td>
             <td style="padding: 10px; border: 1px solid #90caf9;">{'🏆 Winner - Promoted!' if winner == 'challenger' else ''}</td>
         </tr>

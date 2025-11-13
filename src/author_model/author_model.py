@@ -587,6 +587,8 @@ experiment_group_id = str(uuid.uuid4())
 timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # Define input example once for all runs (DRY principle)
+# Input example for model signature inference
+# Format matches what forward(question) expects: question = {'messages': [...]}
 input_example = {
     'messages': [
         {'content': 'What was the overall audit rating for CTCBL?', 'role': 'user'}

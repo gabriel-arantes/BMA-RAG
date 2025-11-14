@@ -17,6 +17,7 @@ resources:
             spark_version: "16.4.x-cpu-ml-scala2.12"
             node_type_id: "Standard_D8s_v5"
             num_workers: 0
+            data_security_mode: "USER_ISOLATION"
             spark_conf:
               "spark.databricks.cluster.profile": "singleNode"
               "spark.master": "local[*]"
@@ -30,7 +31,7 @@ resources:
       # Task definitions
       tasks:
         - task_key: author_dspy_model
-          # job_cluster_key: "training_cluster" #commenting for serverless
+          #job_cluster_key: "training_cluster" #commenting for serverless
           # Dependencies are installed via %pip commands in the notebook itself
           notebook_task:
             notebook_path: ../src/author_model/author_model.py
@@ -58,6 +59,7 @@ resources:
               
               # Training configuration
               num_threads: "2"
+              max_full_evals: "10"
               test_mode: "false"  # Set to "true" for quick testing (3 train/3 test), "false" for full data (70/30 split)
               reflection_minibatch_size: "5"
               

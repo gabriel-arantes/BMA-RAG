@@ -10,11 +10,29 @@ resources:
       tags:
         framework: "mlflow"
         purpose: "model_evaluation"
+
+      # Job configuration
+      job_clusters:
+        - job_cluster_key: "evaluation_cluster" 
+          new_cluster:
+            spark_version: "16.4.x-cpu-ml-scala2.12"
+            node_type_id: "Standard_D8s_v5"
+            data_security_mode: "USER_ISOLATION"
+            num_workers: 0
+            spark_conf:
+              "spark.databricks.cluster.profile": "singleNode"
+              "spark.master": "local[*]"
+              "spark.databricks.delta.preview.enabled": "true"
+              "spark.databricks.delta.retentionDurationCheck.enabled": "false" # usefull for testing but not production
+            custom_tags:
+              purpose: "ml_training"
+              environment: "${var.environment}"
+              ResourceClass: SingleNode
       
       # Task definitions
       tasks:
         - task_key: evaluate_and_promote
-          # Notebook task (serverless)
+          #job_cluster_key: "evaluation_cluster" #commenting for serverless
           # Dependencies are installed via %pip commands in the notebook itself
           notebook_task:
             notebook_path: ../src/evaluation/champion_challenger_evaluation.py

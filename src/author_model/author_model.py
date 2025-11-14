@@ -28,6 +28,7 @@ from databricks.vector_search.client import VectorSearchClient
 from databricks.vector_search.reranker import DatabricksReranker
 
 # MLflow imports
+from mlflow.models import infer_signature
 from mlflow.models.resources import DatabricksVectorSearchIndex
 
 # COMMAND ----------
@@ -52,6 +53,7 @@ dbutils.widgets.text("reflection_chat_endpoint_name", "databricks-claude-sonnet-
 dbutils.widgets.text("max_history_length", "10", "Max History Length")
 dbutils.widgets.text("enable_history", "true", "Enable History")
 dbutils.widgets.text("num_threads", "2", "Number of Threads for GEPA Optimization")
+dbutils.widgets.text("max_full_evals", "2", "Max Full Evaluations for GEPA Optimization")
 dbutils.widgets.dropdown("test_mode", "true", ["true", "false"], "Quick Test Mode (3 train/3 test)")
 
 # Get widget values
@@ -72,6 +74,7 @@ reflection_lm_name = dbutils.widgets.get("reflection_chat_endpoint_name")
 max_history_length = int(dbutils.widgets.get("max_history_length"))
 enable_history = dbutils.widgets.get("enable_history").lower() == "true"
 num_threads = int(dbutils.widgets.get("num_threads"))
+max_full_evals = int(dbutils.widgets.get("max_full_evals"))
 test_mode = dbutils.widgets.get("test_mode").lower() == "true"
 
 # Full model name for Unity Catalog registration
@@ -479,7 +482,7 @@ print(f"{'='*80}")
 gepa_custom = dspy.GEPA(
     metric=validate_retrieval_with_feedback,
     #auto="light",
-    max_full_evals= 2,
+    max_full_evals=max_full_evals,
     reflection_minibatch_size=5,
     reflection_lm=dspy.LM(f"databricks/{reflection_lm_name}"),
     num_threads=num_threads,
@@ -530,12 +533,10 @@ with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
     mlflow.log_param("experiment_group", experiment_group_id)
     
     
-    # 1. Salve o modelo DSPy treinado (prompts) localmente
     model_save_path = "./compiled_gepa_custom_dir"
     compiled_gepa_custom.save(model_save_path, save_program=True)
     print(f"Modelo DSPy compilado salvo em: {model_save_path}")
 
-    # 2. Crie um dict de configuração com os parâmetros de __init__
     config = {
         "lm_name": small_lm_name,
         "index_path": INDEX_PATH,
@@ -543,21 +544,21 @@ with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
         "enable_history": enable_history
     }
     
-    # 3. Salve a configuração em um diretório para artefatos
-    config_dir = "./config_custom" # Nome único para este run
+    config_dir = "./config_custom" 
     os.makedirs(config_dir, exist_ok=True)
     config_path = os.path.join(config_dir, "config.json")
     with open(config_path, 'w') as f:
         json.dump(config, f)
     
-    # 4. Defina os requisitos
     pip_requirements = [
-        "dspy",
-        "mlflow[databricks]>=3.1.0",
-        "databricks-vectorsearch",
-        "databricks-sdk",
-        "databricks-dspy",
-        "pandas" 
+        "dspy==3.0.4",
+        "pydantic==2.12.4",
+        "mlflow==3.6.0",
+        "databricks-vectorsearch==0.63",
+        "databricks-dspy==0.1.0",
+        "databricks-sdk==0.73.0",
+        "pandas==2.2.3",
+        "pyyaml==6.0.2"
     ]
 
     mlflow.dspy.log_model(
@@ -565,14 +566,14 @@ with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
         name="model",
         code_paths=["dspy_program.py"],
         input_example=input_example,
-        resources=[
-            DatabricksVectorSearchIndex(index_name=INDEX_PATH)
-        ],
         task="llm/v1/chat",
-        pip_requirements=pip_requirements
+        #resources=[
+        #    DatabricksVectorSearchIndex(index_name=INDEX_PATH)
+        #],
+        #pip_requirements=pip_requirements
     )
     
-    print(f"✅ GEPA (Custom AI Judge) model trained and LOGGED WITH PYFUNC")
+    print(f"✅ GEPA (Custom AI Judge) model trained and logged")
     print(f"   Accuracy: {gepa_custom_accuracy:.2%}")
 
 id_semantic = str(uuid.uuid4())
@@ -591,7 +592,7 @@ def wrapped_semantic_f1(example, prediction, trace=None, pred_name=None, pred_tr
 gepa_semantic = dspy.GEPA(
     metric=wrapped_semantic_f1, 
     #auto="light",
-    max_full_evals= 2,
+    max_full_evals=max_full_evals,
     reflection_minibatch_size=5,
     reflection_lm=dspy.LM(f"databricks/{reflection_lm_name}"),
     num_threads=num_threads,
@@ -640,13 +641,12 @@ with mlflow.start_run(run_name=f"gepa_semantic_{id_semantic}") as run_semantic:
     mlflow.log_param("enable_history", enable_history)
     mlflow.log_param("num_threads", num_threads)
     mlflow.log_param("experiment_group", experiment_group_id)
+    
 
-    # 1. Salve o modelo DSPy treinado (prompts) localmente
     model_save_path = "./compiled_gepa_semantic_dir"
     compiled_gepa_semantic.save(model_save_path, save_program=True)
     print(f"Modelo DSPy compilado salvo em: {model_save_path}")
 
-    # 2. Crie um dict de configuração com os parâmetros de __init__
     config = {
         "lm_name": small_lm_name,
         "index_path": INDEX_PATH,
@@ -654,36 +654,36 @@ with mlflow.start_run(run_name=f"gepa_semantic_{id_semantic}") as run_semantic:
         "enable_history": enable_history
     }
     
-    # 3. Salve a configuração em um diretório para artefatos
-    config_dir = "./config_semantic" # Nome único para este run
+    config_dir = "./config_semantic" 
     os.makedirs(config_dir, exist_ok=True)
     config_path = os.path.join(config_dir, "config.json")
     with open(config_path, 'w') as f:
         json.dump(config, f)
 
-    # 4. Defina os requisitos
     pip_requirements = [
-        "dspy",
-        "mlflow[databricks]>=3.1.0",
-        "databricks-vectorsearch",
-        "databricks-sdk",
-        "databricks-dspy",
-        "pandas" 
+        "dspy==3.0.4",
+        "pydantic==2.12.4",
+        "mlflow==3.6.0",
+        "databricks-vectorsearch==0.63",
+        "databricks-dspy==0.1.0",
+        "databricks-sdk==0.73.0",
+        "pandas==2.2.3",
+        "pyyaml==6.0.2"
     ]
 
     mlflow.dspy.log_model(
         dspy_model=compiled_gepa_semantic,
         name="model",
         code_paths=["dspy_program.py"], 
-        input_example=input_example,
-        resources=[
-            DatabricksVectorSearchIndex(index_name=INDEX_PATH)
-        ],
         task="llm/v1/chat",
-        pip_requirements=pip_requirements
+        input_example=input_example,
+        #resources=[
+        #    DatabricksVectorSearchIndex(index_name=INDEX_PATH)
+        #],
+        #pip_requirements=pip_requirements
     )
     
-    print(f"✅ GEPA (SemanticF1) model trained and LOGGED WITH PYFUNC")
+    print(f"✅ GEPA (SemanticF1) model trained and logged")
     print(f"   Accuracy: {gepa_semantic_accuracy:.2%}")
 
 
@@ -704,14 +704,14 @@ with mlflow.start_run(run_name=f"model_comparison_{timestamp}") as comparison_ru
         {
             "name": "Custom AI Judge",
             "metric_name": "custom_ai_judge_correctness",
-            "model": compiled_gepa_custom,
+            "model": compiled_gepa_custom, 
             "accuracy": gepa_custom_accuracy,
             "run_id": run_custom.info.run_id
         },
         {
             "name": "SemanticF1",
             "metric_name": "semantic_f1",
-            "model": compiled_gepa_semantic,
+            "model": compiled_gepa_semantic, 
             "accuracy": gepa_semantic_accuracy,
             "run_id": run_semantic.info.run_id
         }
@@ -826,7 +826,7 @@ client.set_model_version_tag(
     name=FULL_MODEL_NAME,
     version=model_version.version,
     key="best_training_run_id",
-    value=best_run_id 
+    value=best_run_id  # ← Direct link to winning training run!
 )
 
 client.set_model_version_tag(

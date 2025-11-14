@@ -1,13 +1,32 @@
 # Databricks notebook source
 # MAGIC %pip install --index-url https://pypi.org/simple mlflow[databricks]>=3.1.0 \
-# MAGIC     databricks-agents databricks-sdk dspy databricks-vectorsearch databricks-dspy pyyaml
+# MAGIC     databricks-agents databricks-sdk dspy databricks-vectorsearch databricks-dspy pyyaml pydantic==2.12.4
+# MAGIC
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
+
+import os
+import mlflow
+
+model_uri = f"models:/test_catalog.test_schema.bma_dspy_model@challenger"
+
+# Download reqs
+req_path = mlflow.pyfunc.get_model_dependencies(model_uri, format="pip")
+
+# Install dependencies
+os.system(f"pip install -r {req_path}")
 
 dbutils.library.restartPython()
 
 # COMMAND ----------
 
+import sys
+print(f"Python Version: {sys.version}")
+
+# COMMAND ----------
+
+import os
 import mlflow
 from mlflow.tracking import MlflowClient
 from databricks import agents

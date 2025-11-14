@@ -1,19 +1,18 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Build Vector Index for RAG
-# MAGIC 
+# MAGIC
 # MAGIC This notebook creates/updates a Delta Sync Vector Search index for the chunked documents.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Define Widgets for Wheel Installation
-# MAGIC 
+# MAGIC
 # MAGIC Define only widgets needed to construct wheel path before restart
 
 # COMMAND ----------
 
-# Define widgets needed for wheel installation
 dbutils.widgets.text("catalog_name", "test_catalog", "Catalog Name")
 dbutils.widgets.text("schema_name", "test_schema", "Schema Name")
 dbutils.widgets.text("rag_utils_wheel", "rag_utils-0.1.0-py3-none-any.whl", "RAG Utils Wheel File")
@@ -23,17 +22,18 @@ catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 rag_utils_wheel = dbutils.widgets.get("rag_utils_wheel")
 
+
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Install Dependencies
-# MAGIC 
+# MAGIC
 # MAGIC For serverless notebook tasks, dependencies must be installed via %pip
 
 # COMMAND ----------
 
 # Install PyPI dependencies first
-# MAGIC %pip install --index-url https://pypi.org/simple databricks-vectorsearch
+%pip install --index-url https://pypi.org/simple databricks-vectorsearch
 
 # COMMAND ----------
 
@@ -42,8 +42,6 @@ rag_utils_wheel = dbutils.widgets.get("rag_utils_wheel")
 
 # COMMAND ----------
 
-# Install rag_utils wheel from Unity Catalog volume
-# Use PyPI index explicitly to avoid Azure DevOps index issues
 wheel_path = f"/Volumes/{catalog_name}/{schema_name}/libs/{rag_utils_wheel}"
 
 # COMMAND ----------
@@ -55,7 +53,7 @@ dbutils.library.restartPython()
 
 # MAGIC %md
 # MAGIC ## Define Remaining Widgets and Get Parameters
-# MAGIC 
+# MAGIC
 # MAGIC After restart, define all widgets and get all values
 
 # COMMAND ----------
@@ -64,23 +62,18 @@ dbutils.library.restartPython()
 dbutils.widgets.text("catalog_name", "test_catalog", "Catalog Name")
 dbutils.widgets.text("schema_name", "test_schema", "Schema Name")
 dbutils.widgets.text("volume_name", "test_volume", "Volume Name")
-dbutils.widgets.text("chunked_table_name", "ctcbl_chunked_docs2", "Chunked Table Name")
-dbutils.widgets.text("embedding_model", "gte-large-en-v1.5", "Embedding Model")
-dbutils.widgets.text("embedding_endpoint", "databricks-gte-large-en-v1.5", "Embedding Endpoint Name")
-dbutils.widgets.text("vector_index_name", "test_volume_ctcbl_chunked_index_element__v0_0_1", "Vector Index Name")
-dbutils.widgets.text("vector_search_endpoint", "ctcbl-unstructured-endpoint", "Vector Search Endpoint Name")
-dbutils.widgets.text("rag_utils_wheel", "rag_utils-0.1.0-py3-none-any.whl", "RAG Utils Wheel File")
-
+dbutils.widgets.text("chunked_table_name", "rag_demo_chunked", "Chunked Table Name")
+dbutils.widgets.text("embedding_endpoint", "databricks-gte-large-en", "Embedding Endpoint Name")
+dbutils.widgets.text("vector_index_name", "rag_demo_chunked_index__v0_0_1", "Vector Index Name")
+dbutils.widgets.text("vector_search_endpoint", "rag_demo_endpoint", "Vector Search Endpoint Name")
 # Get all values from widgets
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 volume_name = dbutils.widgets.get("volume_name")
 chunked_table_name = dbutils.widgets.get("chunked_table_name")
-embedding_model = dbutils.widgets.get("embedding_model")
 embedding_endpoint = dbutils.widgets.get("embedding_endpoint")
 vector_index_name = dbutils.widgets.get("vector_index_name")
 vector_search_endpoint = dbutils.widgets.get("vector_search_endpoint")
-rag_utils_wheel = dbutils.widgets.get("rag_utils_wheel")
 
 # COMMAND ----------
 
@@ -137,7 +130,6 @@ if not is_valid:
 
 print(f"Building vector index: {output_config.vector_index}")
 print(f"Source table: {output_config.chunked_docs_table}")
-print(f"Embedding model: {embedding_model}")
 print(f"Embedding endpoint: {embedding_endpoint}")
 print(f"Vector search endpoint: {output_config.vector_search_endpoint}")
 
@@ -173,4 +165,3 @@ print(f"\nVector Index Statistics:")
 print(f"  Index Name: {output_config.vector_index}")
 print(f"  Row Count: {index_row_count}")
 print(f"\nIndex created/updated successfully!")
-

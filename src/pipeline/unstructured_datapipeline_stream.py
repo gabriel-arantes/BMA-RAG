@@ -16,24 +16,24 @@ from rag_utils.chunking.strategies import get_elements_chunking_udf
 # ============================================================
 
 # Create Databricks widgets for runtime configuration
-ai_parser_version = spark.conf.get("ai_parser_version")
+ai_parser_version = spark.conf.get("bundle.ai_parser_version", "1.1")
 catalog_name = spark.conf.get("bundle.catalog_name", "test_catalog")
 schema_name = spark.conf.get("bundle.schema_name", "test_schema")
 volume_name = spark.conf.get("bundle.volume_name", "test_volume")
 
-source_table_name = spark.conf.get("bundle.source_table_name", "ctcbl_raw_files2")
-parsed_table_name = spark.conf.get("bundle.parsed_table_name", "ctcbl_ai_parse2")
-chunked_table_name = spark.conf.get("bundle.chunked_table_name", "ctcbl_chunked_docs2")
+source_table_name = spark.conf.get("bundle.source_table_name", "rag_demo_raw_files")
+parsed_table_name = spark.conf.get("bundle.parsed_table_name", "rag_demo_parsed")
+chunked_table_name = spark.conf.get("bundle.chunked_table_name", "rag_demo_chunked")
 source_volume_path = spark.conf.get("bundle.source_volume_path", f"/Volumes/{catalog_name}/{schema_name}/{volume_name}/rag_source_files/")
 parsed_volume_path = spark.conf.get("bundle.parsed_volume_path", f"/Volumes/{catalog_name}/{schema_name}/{volume_name}/parsed_dir/")
 schema_location = spark.conf.get("bundle.schema_location", f"/Volumes/{catalog_name}/{schema_name}/{volume_name}/parsed_dir/schema")
 
 # Configure chunker options
 chunker_options = ElementsChunkerOptions(
-    max_chunk_size=int(spark.conf.get("bundle.max_chunk_size", "4000")),
-    min_chunk_size=int(spark.conf.get("bundle.min_chunk_size", "400")),
-    embedding_model=spark.conf.get("bundle.embedding_model", "gte-large-en-v1.5"),
-    config_path=spark.conf.get("bundle.config_path", "/Workspace/Users/garantes_oc@bma.bm/config/rag_config.json")
+    max_chunk_size=int(spark.conf.get("bundle.max_chunk_size", "1850")),
+    min_chunk_size=int(spark.conf.get("bundle.min_chunk_size", "250")),
+    embedding_model=spark.conf.get("bundle.embedding_model", "databricks-gte-large-en"),
+    config_path="../rag_config.json"
 )
 
 db_chunking_udf = get_elements_chunking_udf(chunker_options)
@@ -127,7 +127,7 @@ def parsed_docs():
 @dlt.expect("valid_chunk", "chunk_content IS NOT NULL")
 @dlt.expect("valid_chunk_id", "chunk_id IS NOT NULL")
 def chunked_docs():
-    df_with_json = dlt.read(parsed_table_name).withColumn("elements_json", to_json(col("elements")))
+    df_with_json = dlt.readStream(parsed_table_name).withColumn("elements_json", to_json(col("elements")))
     return (
         df_with_json
         .withColumn("chunks", db_chunking_udf(col("elements_json")))

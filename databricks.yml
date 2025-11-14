@@ -34,19 +34,15 @@ variables:
   
   vector_search_endpoint:
     description: "Vector search endpoint name for document retrieval"
-    default: "ctcbl-unstructured-endpoint"
+    default: "bma-rag-endpoint"
   
   vector_index_name:
     description: "Vector search index name containing document embeddings"
-    default: "test_volume_ctcbl_chunked_index_element__v0_0_1"
-  
-  vector_index_embedding_model:
-    description: "Model serving endpoint name for embeddings"
-    default: "databricks-gte-large-en-v1.5"
+    default: "test_volume_ctcbl_chunked_index_element__v0_0_2"
   
   embedding_endpoint:
     description: "Model serving endpoint name for embeddings"
-    default: "databricks-gte-large-en-v1.5"
+    default: "databricks-gte-large-en"
   
   # Champion model serving endpoint configuration
   serving_endpoint_name:

@@ -324,18 +324,18 @@ class RAG(dspy.Module):
     # Core forward method
     # ---------------------------------------------------------
     
-    def forward(self, question):
+    def forward(self, messages):
         # Extract question text
-        if isinstance(question, dict) and "messages" in question:
-            messages = question["messages"]
-            question_text = messages[-1]["content"]
+        if isinstance(messages, dict) and "messages" in messages:
+            message_list = messages["messages"]
+            question_text = message_list[-1]["content"]
             history = extract_history_from_messages(
-                messages,
+                message_list,
                 max_length=self.max_history_length,
                 enable_history=self.enable_history
             )
         else:
-            question_text = question
+            question_text = str(messages)
             history = dspy.History(messages=[])
         
         # Build components lazily (NOT serialized)
@@ -434,9 +434,10 @@ raw_training_data = [
 data_set = [
     # Convert to DSPy examples with mosaic agent format
     dspy.Example(
-        question={'messages': [{'content': item["question"], 'role': 'user'}]},
+        messages={'messages': [{'content': item["question"], 'role': 'user'}]},
+        question=item["question"],
         response=item["response"]
-    ).with_inputs("question")
+    ).with_inputs("messages")
     for item in raw_training_data
 ]
 example = data_set[24]
@@ -475,7 +476,7 @@ prediction_obj = rag(**example.inputs())
 score = metric(example, prediction_obj)
 
 # Extract question text from mosaic format for display
-question_text = example.question["messages"][-1]["content"]
+question_text = example.question
 print(f"Question: \t {question_text}\n")
 print(f"Gold Response: \t {example.response}\n")
 print(f"Predicted Response: \t {prediction_obj.response}\n")
@@ -502,11 +503,8 @@ def validate_retrieval_with_feedback(example, prediction, trace=None, pred_name=
     """
     Uses Databricks AI judges to validate the retrieval answer and return score (1.0 = correct, 0.0 = incorrect) plus feedback
     """
-    # Extract question text from mosaic format
-    if isinstance(example.question, dict) and "messages" in example.question:
-        question_text = example.question["messages"][-1]["content"]
-    else:
-        question_text = example.question
+
+    question_text = example.question
     
     # Handle prediction which might be a string or Prediction object
     if isinstance(prediction, str):
@@ -608,7 +606,7 @@ timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # Define input example once for all runs (DRY principle)
 # Input example for model signature inference
-# Format matches what forward(question) expects: question = {'messages': [...]}
+# Format matches what forward(messages) expects: messages = {'messages': [...]}
 input_example = {
     'messages': [
         {'content': 'What was the overall audit rating for CTCBL?', 'role': 'user'}
@@ -715,8 +713,13 @@ print(f"{'='*80}")
 
 semantic_f1_metric = SemanticF1(decompositional=True)
 
+def wrapped_semantic_f1(example, prediction, trace=None, pred_name=None, pred_trace=None):
+    """Wraps SemanticF1 to accept extra GEPA reflection args and ignore them."""
+    return semantic_f1_metric(example, prediction, trace=trace)
+
+
 gepa_semantic = dspy.GEPA(
-    metric=semantic_f1_metric,
+    metric=wrapped_semantic_f1, 
     auto="light",
     reflection_minibatch_size=5,
     reflection_lm=dspy.LM(f"databricks/{reflection_lm_name}"),

@@ -52,8 +52,8 @@ resources:
               reflection_chat_endpoint_name: "databricks-claude-sonnet-4-5"
               
               # Vector search configuration
-              vector_search_endpoint: "ctcbl-unstructured-endpoint"
-              vector_index_name: "test_volume_ctcbl_chunked_index_element__v0_0_1"
+              vector_search_endpoint: "bma-rag-endpoint"
+              vector_index_name: "test_volume_ctcbl_chunked_index_element__v0_0_2"
               evaluation_dataset_table: "rag_eval_dataset"
               
               # Training configuration

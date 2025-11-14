@@ -22,8 +22,7 @@ resources:
               schema_name: ${var.schema_name}
               volume_name: ${var.volume_name}
               chunked_table_name: ctcbl_chunked_docs2
-              embedding_model: gte-large-en-v1.5
-              embedding_endpoint: ${var.vector_index_embedding_model}
+              embedding_endpoint: ${var.embedding_endpoint}
               vector_index_name: ${var.vector_index_name}
               vector_search_endpoint: ${var.vector_search_endpoint}
               rag_utils_wheel: rag_utils-0.1.0-py3-none-any.whl

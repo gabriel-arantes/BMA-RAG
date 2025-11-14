@@ -28,7 +28,7 @@ def build_retriever_index(
     vector_search_endpoint: str,
     chunked_docs_table_name: str,
     vector_search_index_name: str,
-    embedding_endpoint_name: str,
+    embedding_model_endpoint_name: str,
     force_delete_index_before_create: bool = True,
     primary_key: str = "element_id",
     embedding_source_column: str = "text",
@@ -40,7 +40,7 @@ def build_retriever_index(
         vector_search_endpoint: Name of the vector search endpoint
         chunked_docs_table_name: Fully qualified name of the chunked docs table
         vector_search_index_name: Name for the vector search index
-        embedding_endpoint_name: Name of the embedding endpoint to use
+        embedding_model_endpoint_name: Name of the embedding endpoint to use
         force_delete_index_before_create: If True, delete existing index before creating new one
         primary_key: Primary key column name (default: "element_id")
         embedding_source_column: Column name containing text to embed (default: "text")
@@ -100,7 +100,7 @@ def build_retriever_index(
                 embedding_source_columns=[
                     EmbeddingSourceColumn(
                         name=embedding_source_column,
-                        embedding_model_endpoint_name=embedding_endpoint_name,
+                        embedding_model_endpoint_name=embedding_model_endpoint_name,
                     )
                 ],
             )

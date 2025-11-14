@@ -112,70 +112,6 @@ try:
 
 except Exception as e:
     print(f"Error querying vector index: {e}")
-    
-
-# COMMAND ----------
-
-def extract_history_from_messages(messages, max_length=None, enable_history=True):
-    """
-    Extract conversation history from message list.
-    Converts [{role, content}, ...] to dspy.History format.
-    
-    Args:
-        messages: List of message dicts/objects with role and content
-        max_length: Maximum number of conversation turns to include
-        enable_history: Whether to extract history (if False, returns empty history)
-    
-    Returns:
-        dspy.History object with messages in format [{"question": ..., "response": ...}]
-    """
-    if not enable_history or not messages or len(messages) <= 1:
-        return dspy.History(messages=[])
-    
-    history_messages = []
-    
-    # Extract previous messages (excluding last one, which is the current question)
-    previous_messages = messages[:-1]
-    
-    # Pair user messages with following assistant messages
-    i = 0
-    while i < len(previous_messages):
-        # Get message content, handling both dict and object formats
-        msg = previous_messages[i]
-        role = msg.role if hasattr(msg, "role") else msg.get("role", "")
-        content = msg.content if hasattr(msg, "content") else msg.get("content", "")
-        
-        if role == "user" and content:
-            # Look for following assistant message
-            if i + 1 < len(previous_messages):
-                next_msg = previous_messages[i + 1]
-                next_role = next_msg.role if hasattr(next_msg, "role") else next_msg.get("role", "")
-                next_content = next_msg.content if hasattr(next_msg, "content") else next_msg.get("content", "")
-                
-                if next_role == "assistant" and next_content:
-                    # Found a user/assistant pair
-                    history_messages.append({
-                        "question": content,
-                        "response": next_content
-                    })
-                    i += 2  # Skip both messages
-                    continue
-        
-        i += 1
-    
-    # Apply max_length if specified (keep most recent turns)
-    if max_length is not None and max_length > 0:
-        history_messages = history_messages[-max_length:]
-    
-    # Create history object
-    history = dspy.History(messages=history_messages)
-    
-    # Optional debug output (controlled by DSPY_DEBUG_HISTORY environment variable)
-    if os.environ.get("DSPY_DEBUG_HISTORY", "false").lower() == "true":
-        print(f"[DEBUG] Extracted history: {len(history_messages)} turns")
-        print(f"[DEBUG] History messages: {history_messages}")
-    
-    return history
 
 # COMMAND ----------
 
@@ -265,101 +201,12 @@ dspy_vector_search_tool = dspy.Tool(
 
 # COMMAND ----------
 
-class BMAChatAssistant(dspy.Signature):
-    """
-    You are a trusted assistant that helps answer questions based only on the provided information. 
-    You are given a list of tools to handle the customer's request. You should decide the right tool 
-    to use in order to appropriately answer the customer's question.
-    """
-    context: str = dspy.InputField(desc="The retrieved or provided context to answer the customer's question.")
-    question: str = dspy.InputField(desc="The customer's question that needs to be answered.")
-    history: dspy.History = dspy.InputField(desc="A record of previous conversation turns as question/response pairs.")
-    response: str = dspy.OutputField(desc="The assistant's answer to the customer's question, based solely on the context.")
-
-# COMMAND ----------
-
-class RAG(dspy.Module):
-    """
-    Stateless, fully serializable DSPy RAG module.
-    
-    Does NOT capture non-serializable Databricks objects or globals.
-    """
-    
-    def __init__(
-        self,
-        lm_name: str,
-        index_path: str,
-        max_history_length: int = 10,
-        enable_history: bool = True,
-        for_mosaic_agent: bool = True
-    ):
-        super().__init__()
-        self.lm_name = lm_name
-        self.index_path = index_path
-        self.max_history_length = max_history_length
-        self.enable_history = enable_history
-        self.for_mosaic_agent = for_mosaic_agent
-        
-        # DSPy Signature wrapper (serializable)
-        self.response_generator = dspy.Predict(BMAChatAssistant)
-    
-    # ---------------------------------------------------------
-    # Lazy builders — do NOT get serialized
-    # ---------------------------------------------------------
-    
-    def build_retriever(self):
-        return DatabricksRM(
-            databricks_index_name=self.index_path,
-            text_column_name="chunk_content",
-            docs_id_column_name="chunk_id",
-            columns=["chunk_id", "chunk_content", "path"],
-            k=5,
-            use_with_databricks_agent_framework=self.for_mosaic_agent,
-        )
-    
-    def build_lm(self):
-        return dspy.LM(model=f"databricks/{self.lm_name}")
-    
-    # ---------------------------------------------------------
-    # Core forward method
-    # ---------------------------------------------------------
-    
-    def forward(self, messages):
-        # Extract question text
-        if isinstance(messages, dict) and "messages" in messages:
-            message_list = messages["messages"]
-            question_text = message_list[-1]["content"]
-            history = extract_history_from_messages(
-                message_list,
-                max_length=self.max_history_length,
-                enable_history=self.enable_history
-            )
-        else:
-            question_text = str(messages)
-            history = dspy.History(messages=[])
-        
-        # Build components lazily (NOT serialized)
-        retriever = self.build_retriever()
-        lm = self.build_lm()
-        
-        # Retrieve context
-        context = retriever(question_text)
-        
-        # Generate response
-        with dspy.context(lm=lm):
-            return self.response_generator(
-                context=context,
-                question=question_text,
-                history=history
-            )
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC ## Create an instance of the agent and vibe check
 
 # COMMAND ----------
 
+from dspy_program import RAG, BMAChatAssistant, extract_history_from_messages
 
 rag = RAG(
     lm_name=small_lm_name,
@@ -600,12 +447,16 @@ displayHTML(f"<h1>Uncompiled {larger_lm_name} accuracy: {uncompiled_large_lm_acc
 
 # COMMAND ----------
 
+# Importar o wrapper e libs adicionais
+import json
+from mlflow_wrapper import DspyModelWrapper
+from mlflow.tracking import MlflowClient
+
 # Generate unique experiment group ID for linking all related runs
 experiment_group_id = str(uuid.uuid4())
 timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # Define input example once for all runs (DRY principle)
-# Input example for model signature inference
 # Format matches what forward(messages) expects: messages = {'messages': [...]}
 input_example = {
     'messages': [
@@ -643,6 +494,9 @@ with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
     mlflow.set_tag("training_metric", "custom_ai_judge_correctness")
     mlflow.set_tag("role", "training")
     
+    # Importar a classe RAG do arquivo .py
+    from dspy_program import RAG
+    
     compiled_gepa_custom = gepa_custom.compile(
         RAG(
             lm_name=small_lm_name,
@@ -676,35 +530,58 @@ with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
     mlflow.log_param("num_threads", num_threads)
     mlflow.log_param("experiment_group", experiment_group_id)
     
-    # Log the trained model with full UC metadata (signature, input_example, resources)
+    # Log the trained model with full UC metadata (signature, input_example)
     signature_prediction = compiled_gepa_custom(input_example)
     signature = infer_signature(input_example, signature_prediction)
     
-    # Note: MLflow may show a warning about input_example validation, but this is expected
-    # for DSPy models with mosaic agent format. The model will function correctly.
-    mlflow.dspy.log_model(
-        compiled_gepa_custom,
+    # 1. Salve o modelo DSPy treinado (prompts) localmente
+    model_save_path = "./compiled_gepa_custom_dir"
+    compiled_gepa_custom.save(model_save_path)
+    print(f"Modelo DSPy compilado salvo em: {model_save_path}")
+
+    # 2. Crie um dict de configuração com os parâmetros de __init__
+    config = {
+        "lm_name": small_lm_name,
+        "index_path": INDEX_PATH,
+        "max_history_length": max_history_length,
+        "enable_history": enable_history
+    }
+    
+    # 3. Salve a configuração em um diretório para artefatos
+    config_dir = "./config_custom" # Nome único para este run
+    os.makedirs(config_dir, exist_ok=True)
+    config_path = os.path.join(config_dir, "config.json")
+    with open(config_path, 'w') as f:
+        json.dump(config, f)
+    
+    # 4. Defina os requisitos
+    pip_requirements = [
+        "dspy-ai",
+        "mlflow[databricks]>=3.1.0",
+        "databricks-vectorsearch",
+        "databricks-sdk",
+        "databricks-dspy",
+        "pandas" 
+    ]
+
+    # 5. Logue o modelo usando mlflow.pyfunc
+    print("Logando modelo (GEPA Custom) com mlflow.pyfunc...")
+    mlflow.pyfunc.log_model(
         artifact_path="model",
+        python_model=DspyModelWrapper(),
+        code_path=["dspy_program.py", "mlflow_wrapper.py"],
+        artifacts={
+            "compiled_model": model_save_path, 
+            "config": config_dir
+        },
+        pip_requirements=pip_requirements,
         signature=signature,
-        input_example=input_example,
-        resources=[
-            DatabricksVectorSearchIndex(index_name=INDEX_PATH)
-        ],
-        pip_requirements=[
-            "dspy",
-            "mlflow[databricks]>=3.1.0",
-            "databricks-vectorsearch",
-            "databricks-sdk",
-            "databricks-dspy"
-        ]
+        input_example=input_example
     )
     
-    print(f"✅ GEPA (Custom AI Judge) model trained and logged")
+    print(f"✅ GEPA (Custom AI Judge) model trained and LOGGED WITH PYFUNC")
     print(f"   Accuracy: {gepa_custom_accuracy:.2%}")
 
-# ==================================================
-# GEPA TRAINING #2: SemanticF1
-# ==================================================
 id_semantic = str(uuid.uuid4())
 print(f"\n{'='*80}")
 print(f"📊 GEPA TRAINING #2: SemanticF1")
@@ -733,6 +610,9 @@ with mlflow.start_run(run_name=f"gepa_semantic_{id_semantic}") as run_semantic:
     mlflow.set_tag("optimization_type", "gepa_semantic")
     mlflow.set_tag("training_metric", "semantic_f1")
     mlflow.set_tag("role", "training")
+    
+    # Importar a classe RAG do arquivo .py
+    from dspy_program import RAG
     
     compiled_gepa_semantic = gepa_semantic.compile(
         RAG(
@@ -767,31 +647,58 @@ with mlflow.start_run(run_name=f"gepa_semantic_{id_semantic}") as run_semantic:
     mlflow.log_param("num_threads", num_threads)
     mlflow.log_param("experiment_group", experiment_group_id)
     
-    # Log the trained model with full UC metadata (signature, input_example, resources)
+    # Log the trained model with full UC metadata (signature, input_example)
     signature_prediction = compiled_gepa_semantic(input_example)
     signature = infer_signature(input_example, signature_prediction)
+
+    # 1. Salve o modelo DSPy treinado (prompts) localmente
+    model_save_path = "./compiled_gepa_semantic_dir"
+    compiled_gepa_semantic.save(model_save_path)
+    print(f"Modelo DSPy compilado salvo em: {model_save_path}")
+
+    # 2. Crie um dict de configuração com os parâmetros de __init__
+    config = {
+        "lm_name": small_lm_name,
+        "index_path": INDEX_PATH,
+        "max_history_length": max_history_length,
+        "enable_history": enable_history
+    }
     
-    # Note: MLflow may show a warning about input_example validation, but this is expected
-    # for DSPy models with mosaic agent format. The model will function correctly.
-    mlflow.dspy.log_model(
-        compiled_gepa_semantic,
+    # 3. Salve a configuração em um diretório para artefatos
+    config_dir = "./config_semantic" # Nome único para este run
+    os.makedirs(config_dir, exist_ok=True)
+    config_path = os.path.join(config_dir, "config.json")
+    with open(config_path, 'w') as f:
+        json.dump(config, f)
+
+    # 4. Defina os requisitos
+    pip_requirements = [
+        "dspy-ai",
+        "mlflow[databricks]>=3.1.0",
+        "databricks-vectorsearch",
+        "databricks-sdk",
+        "databricks-dspy",
+        "pandas" 
+    ]
+
+    # 5. Logue o modelo usando mlflow.pyfunc
+    print("Logando modelo (GEPA SemanticF1) com mlflow.pyfunc...")
+    mlflow.pyfunc.log_model(
         artifact_path="model",
+        python_model=DspyModelWrapper(),
+        code_path=["dspy_program.py", "mlflow_wrapper.py"],
+        artifacts={
+            "compiled_model": model_save_path, 
+            "config": config_dir
+        },
+        pip_requirements=pip_requirements,
         signature=signature,
-        input_example=input_example,
-        resources=[
-            DatabricksVectorSearchIndex(index_name=INDEX_PATH)
-        ],
-        pip_requirements=[
-            "dspy",
-            "mlflow[databricks]>=3.1.0",
-            "databricks-vectorsearch",
-            "databricks-sdk",
-            "databricks-dspy"
-        ]
+        input_example=input_example
     )
     
-    print(f"✅ GEPA (SemanticF1) model trained and logged")
+    print(f"✅ GEPA (SemanticF1) model trained and LOGGED WITH PYFUNC")
     print(f"   Accuracy: {gepa_semantic_accuracy:.2%}")
+
 
 # ==================================================
 # RUN #3: COMPARE METRICS AND REGISTER BEST MODEL
@@ -810,25 +717,24 @@ with mlflow.start_run(run_name=f"model_comparison_{timestamp}") as comparison_ru
         {
             "name": "Custom AI Judge",
             "metric_name": "custom_ai_judge_correctness",
-            "model": compiled_gepa_custom,
+            # "model": compiled_gepa_custom, # Não precisamos mais do objeto
             "accuracy": gepa_custom_accuracy,
             "run_id": run_custom.info.run_id
         },
         {
             "name": "SemanticF1",
             "metric_name": "semantic_f1",
-            "model": compiled_gepa_semantic,
+            # "model": compiled_gepa_semantic, # Não precisamos mais do objeto
             "accuracy": gepa_semantic_accuracy,
             "run_id": run_semantic.info.run_id
         }
-        # Future: Just append new metrics here!
     ]
     
     # Select best model using max() - scalable and elegant!
     best_result = max(model_results, key=lambda x: x["accuracy"])
     
     # Extract values
-    best_model = best_result["model"]
+    # best_model = best_result["model"] # Não precisamos mais disso
     best_metric_name = best_result["metric_name"]
     best_accuracy = best_result["accuracy"]
     best_run_id = best_result["run_id"]
@@ -881,7 +787,7 @@ with mlflow.start_run(run_name=f"model_comparison_{timestamp}") as comparison_ru
     # Register model using URI from best training run (no re-logging)
     model_uri = f"runs:/{best_run_id}/model"
     
-    client = mlflow.tracking.MlflowClient()
+    client = MlflowClient()
     model_version = mlflow.register_model(
         model_uri=model_uri,
         name=FULL_MODEL_NAME
@@ -897,7 +803,6 @@ with mlflow.start_run(run_name=f"model_comparison_{timestamp}") as comparison_ru
     print(f"   Model: {FULL_MODEL_NAME}")
     print(f"   Version: {model_version.version}")
     print(f"   Source Run: {best_run_id}")
-
 # COMMAND ----------
 
 # MAGIC %md

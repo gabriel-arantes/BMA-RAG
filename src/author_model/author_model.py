@@ -28,7 +28,6 @@ from databricks.vector_search.client import VectorSearchClient
 from databricks.vector_search.reranker import DatabricksReranker
 
 # MLflow imports
-from mlflow.models import infer_signature
 from mlflow.models.resources import DatabricksVectorSearchIndex
 
 # COMMAND ----------
@@ -530,9 +529,6 @@ with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
     mlflow.log_param("num_threads", num_threads)
     mlflow.log_param("experiment_group", experiment_group_id)
     
-    # Log the trained model with full UC metadata (signature, input_example)
-    signature_prediction = compiled_gepa_custom(input_example)
-    signature = infer_signature(input_example, signature_prediction)
     
     # 1. Salve o modelo DSPy treinado (prompts) localmente
     model_save_path = "./compiled_gepa_custom_dir"
@@ -568,11 +564,11 @@ with mlflow.start_run(run_name=f"gepa_custom_{id_custom}") as run_custom:
         dspy_model=compiled_gepa_custom,
         name="model",
         code_paths=["dspy_program.py"],
-        signature=signature,
         input_example=input_example,
         resources=[
             DatabricksVectorSearchIndex(index_name=INDEX_PATH)
         ],
+        task="llm/v1/chat",
         pip_requirements=pip_requirements
     )
     
@@ -644,10 +640,6 @@ with mlflow.start_run(run_name=f"gepa_semantic_{id_semantic}") as run_semantic:
     mlflow.log_param("enable_history", enable_history)
     mlflow.log_param("num_threads", num_threads)
     mlflow.log_param("experiment_group", experiment_group_id)
-    
-    # Log the trained model with full UC metadata (signature, input_example)
-    signature_prediction = compiled_gepa_semantic(input_example)
-    signature = infer_signature(input_example, signature_prediction)
 
     # 1. Salve o modelo DSPy treinado (prompts) localmente
     model_save_path = "./compiled_gepa_semantic_dir"
@@ -683,11 +675,11 @@ with mlflow.start_run(run_name=f"gepa_semantic_{id_semantic}") as run_semantic:
         dspy_model=compiled_gepa_semantic,
         name="model",
         code_paths=["dspy_program.py"], 
-        signature=signature,
         input_example=input_example,
         resources=[
             DatabricksVectorSearchIndex(index_name=INDEX_PATH)
         ],
+        task="llm/v1/chat",
         pip_requirements=pip_requirements
     )
     
@@ -712,14 +704,14 @@ with mlflow.start_run(run_name=f"model_comparison_{timestamp}") as comparison_ru
         {
             "name": "Custom AI Judge",
             "metric_name": "custom_ai_judge_correctness",
-            "model": compiled_gepa_custom, 
+            "model": compiled_gepa_custom,
             "accuracy": gepa_custom_accuracy,
             "run_id": run_custom.info.run_id
         },
         {
             "name": "SemanticF1",
             "metric_name": "semantic_f1",
-            "model": compiled_gepa_semantic, 
+            "model": compiled_gepa_semantic,
             "accuracy": gepa_semantic_accuracy,
             "run_id": run_semantic.info.run_id
         }
@@ -798,6 +790,7 @@ with mlflow.start_run(run_name=f"model_comparison_{timestamp}") as comparison_ru
     print(f"   Model: {FULL_MODEL_NAME}")
     print(f"   Version: {model_version.version}")
     print(f"   Source Run: {best_run_id}")
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -833,7 +826,7 @@ client.set_model_version_tag(
     name=FULL_MODEL_NAME,
     version=model_version.version,
     key="best_training_run_id",
-    value=best_run_id  # ← Direct link to winning training run!
+    value=best_run_id 
 )
 
 client.set_model_version_tag(

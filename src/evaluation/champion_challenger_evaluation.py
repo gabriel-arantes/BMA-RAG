@@ -3,9 +3,11 @@
 # MAGIC     databricks-agents databricks-sdk dspy databricks-vectorsearch databricks-dspy pyyaml
 
 # COMMAND ----------
+
 dbutils.library.restartPython()
 
 # COMMAND ----------
+
 import mlflow
 from mlflow.tracking import MlflowClient
 from databricks import agents
@@ -18,10 +20,12 @@ import uuid
 mlflow.set_registry_uri("databricks-uc")
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Configuration
 
 # COMMAND ----------
+
 dbutils.widgets.text("catalog_name", "test_catalog")
 dbutils.widgets.text("schema_name", "test_schema")
 dbutils.widgets.text("model_name", "bma_dspy_model")
@@ -43,10 +47,12 @@ print("Model:", FULL_MODEL_NAME)
 print("Endpoint:", endpoint_name)
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Evaluation Dataset
 
 # COMMAND ----------
+
 eval_data = [
     {"q": "Which period did the AML/ATF audit cover?", "exp": "The audit covered April 1, 2021 to October 31, 2022."},
     {"q": "What was the overall audit rating for CTCBL?", "exp": "Satisfactory."},
@@ -57,10 +63,12 @@ eval_data = [
 print("Evaluation examples:", len(eval_data))
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## DSPy Loader and Inference
 
 # COMMAND ----------
+
 def load_dspy_alias(alias):
     client = MlflowClient()
     mv = client.get_model_version_by_alias(FULL_MODEL_NAME, alias)
@@ -98,10 +106,12 @@ def evaluate(model):
     return sum(scores) / len(scores)
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Champion vs Challenger
 
 # COMMAND ----------
+
 print("=== LOADING MODELS ===")
 
 champion_model, champion_version = load_dspy_alias("champion")
@@ -122,10 +132,12 @@ winner = "challenger" if acc_h > acc_c else "champion"
 print("\nWinner:", winner)
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Promote Challenger if wins
 
 # COMMAND ----------
+
 client = MlflowClient()
 
 if winner == "challenger":
@@ -142,61 +154,17 @@ else:
 print("Champion now:", champion_version)
 
 # COMMAND ----------
+
 # MAGIC %md
-# MAGIC ## Create Wrapper (WITHOUT registering new model)
+# MAGIC ## Deploy using Agent Framework
 
 # COMMAND ----------
-from mlflow.pyfunc import ChatAgent
-from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
-
-class WrappedDSPy(ChatAgent):
-    def __init__(self, agent):
-        self.agent = agent
-
-    def predict(self, messages, context=None, custom_inputs=None):
-        user_msg = messages[-1].content
-        raw = self.agent(user_msg)
-        content = getattr(raw, "response", str(raw))
-        return ChatAgentResponse(
-            messages=[ChatAgentMessage(
-                role="assistant",
-                content=content,
-                id=str(uuid.uuid4())
-            )]
-        )
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Build wrapper as **run artifact**, NOT a new model version
-
-# COMMAND ----------
-champion_uri = f"models:/{FULL_MODEL_NAME}/{champion_version}"
-champion_program = mlflow.dspy.load_model(champion_uri)
-
-wrapper = WrappedDSPy(champion_program)
-
-with mlflow.start_run(run_name="wrapper_for_serving"):
-    mlflow.pyfunc.log_model(
-        artifact_path="model",
-        python_model=wrapper
-    )
-    run_id = mlflow.active_run().info.run_id
-
-wrapper_uri = f"runs:/{run_id}/model"
-print("Wrapper URI:", wrapper_uri)
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Deploy using Agent Framework (no model version pollution)
-
-# COMMAND ----------
-print(f"Deploying champion wrapper: {wrapper_uri}")
 
 deployment = agents.deploy(
-    model_uri=wrapper_uri,
-    endpoint_name=endpoint_name,
+    model_name=FULL_MODEL_NAME,        
+    model_version=champion_version,
     scale_to_zero_enabled=scale_to_zero,
-    service_principal_name="bma-rag-serving"
+    service_principal_name="bma-dspy-serving"
 )
 
 print("Endpoint:", deployment.query_endpoint)
